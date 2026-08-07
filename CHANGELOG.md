@@ -84,3 +84,15 @@
 - `src/App.tsx`: асинхронная загрузка агентов через `getAgents()` с
   синхронным fallback при старте.
 - KB: README_FLEET (секция «JSON-конфигурация»), README_DEV (agents-config.json).
+
+### Добавлено (session-size-display)
+
+- Утилиты `src/utils/_sessionSize.ts`: чистые функции `formatBytes` (B, KB, MB, GB) и `sessionPayloadSize` (подсчёт chars, bytes JSON UTF-8, approxTokens `round(chars / 4)` и детекция `isHeavy` при превышении 500 KB payload).
+- В шапке активного чата (`_ChatConsole.tsx`): отображение размера истории диалога (`formatBytes`), количества сообщений, ориентировочного числа токенов (`~N tok`) и неблокирующего предупреждения `⚠️ Тяжёлая сессия` (>500 KB).
+- В списке сессий (`_SessionList.tsx`): гарантированное отображение `message_count` и динамический бейдж размера (`formatBytes` и `~tok`) для ранее открытых в текущей сессии чатов через кэш без выполнения $N+1$ лишних сетевых запросов.
+- Типы `HermesSession` в `src/types/hermes.ts` дополнены опциональными полями `bytes?: number` и `total_tokens?: number`.
+- OpenSpec: спецификация `openspec/changes/session-size-display` (валидация пройдена).
+
+### Исправлено
+
+- Исправлен конфликт идентификаторов сессий (`session.seeded`): внутренний runtime session ID шлюза больше не перезаписывает постоянный SQLite ID сессии в `App.tsx` при открытии существующих сессий, устраняя ошибку `404 Not Found` на `/messages` и последующую ошибку `RPC 4007: session not found`.

@@ -42,6 +42,8 @@ export interface HermesSession {
   title?: string;
   preview?: string;
   message_count?: number;
+  bytes?: number;
+  total_tokens?: number;
   [k: string]: unknown;
 }
 

@@ -1,7 +1,8 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { clientFor } from '../api/client';
 import { HermesWsClient } from '../api/ws';
+import { formatBytes, sessionPayloadSize } from '../utils/_sessionSize';
 import type { AgentTarget } from '../types/agent';
 import type { HermesSessionMessage, SessionMessagesResponse } from '../types/hermes';
 
@@ -34,8 +35,17 @@ export default function ChatConsole({ agent, sessionId, onSessionCreated }: Chat
   useEffect(() => {
     setGatewaySid(null);
   }, [sessionId]);
+  // Мемоизированный подсчет размера payload и токенов
+  const payloadStats = useMemo(() => sessionPayloadSize(messages), [messages]);
   const client = clientFor(agent);
   const queryClient = useQueryClient();
+
+  // Синхронизируем вычисленный вес открытой сессии в кэш для сайдбара
+  useEffect(() => {
+    if (sessionId && sessionId !== 'new' && payloadStats.bytes > 0) {
+      queryClient.setQueryData(['session-size', agent.id, sessionId], payloadStats);
+    }
+  }, [agent.id, sessionId, payloadStats, queryClient]);
 
   // Автоскролл к последнему сообщению
   useEffect(() => {
@@ -100,13 +110,14 @@ export default function ChatConsole({ agent, sessionId, onSessionCreated }: Chat
         setIsWsConnected(connected);
         if (connected && ws && !isCancelled) {
           if (sessionId === 'new') {
-            // Не создаём сессию здесь — иначе onSessionCreated → ремаунт →
-            // WS закроется и gateway-сессия умрёт. Ждём handleSend.
-            console.log('WS ready for new session creation');
+            console.log('WS ready for new session creation on first message');
           } else {
             try {
               console.log('Resuming session on gateway:', sessionId);
-              await ws.resumeSession(sessionId, { profile: agent.profile });
+              const res = await ws.resumeSession(sessionId, { profile: agent.profile });
+              if (res && typeof res === 'object' && 'session_id' in (res as any)) {
+                setGatewaySid(String((res as any).session_id));
+              }
             } catch (err) {
               console.warn('Session resume failed (possibly transient session):', err);
             }
@@ -184,8 +195,13 @@ export default function ChatConsole({ agent, sessionId, onSessionCreated }: Chat
         } else if (type === 'session.seeded' || type === 'session.info') {
           const seededId = payload.session_id || payload.id || event.session_id;
           if (seededId) {
+            console.log('Gateway active session ID (runtime):', seededId);
             setGatewaySid(String(seededId));
-            console.debug('Gateway session ID:', seededId, '(DB ID:', sessionId, ')');
+            // Only update parent App state if we were in 'new' (draft) mode
+            if (sessionId === 'new') {
+              const dbId = payload.stored_session_id || seededId;
+              onSessionCreated?.(String(dbId));
+            }
           }
         }
       };
@@ -224,7 +240,6 @@ export default function ChatConsole({ agent, sessionId, onSessionCreated }: Chat
 
     try {
       if (wsClientRef.current && isWsConnected) {
-        // gatewaySid — для WS-операций; sessionId — DB ID для REST
         let activeSid = gatewaySid || sessionId;
         let newSessionDbId: string | null = null;
         
@@ -232,19 +247,15 @@ export default function ChatConsole({ agent, sessionId, onSessionCreated }: Chat
         if (activeSid === 'new') {
           const res = await wsClientRef.current.createSession({ profile: agent.profile });
           if (res?.session_id) {
-            setGatewaySid(res.session_id);
             activeSid = res.session_id;
+            setGatewaySid(activeSid);
             newSessionDbId = res.stored_session_id || res.session_id;
-            // НЕ вызываем onSessionCreated здесь — иначе React размонтирует
-            // компонент во время await submitPrompt и WS закроется.
           }
         }
 
         console.log(`Submitting prompt to session: ${activeSid}`);
         await wsClientRef.current.submitPrompt(activeSid, userText);
 
-        // Только теперь, когда prompt точно ушёл, сообщаем родителю новый ID.
-        // Ремаунт после этого безопасен — prompt уже отправлен.
         if (newSessionDbId) {
           onSessionCreated?.(newSessionDbId);
         }
@@ -286,14 +297,38 @@ export default function ChatConsole({ agent, sessionId, onSessionCreated }: Chat
   return (
     <div className="pane" style={{ flex: 1 }}>
       <div className="pane-header">
-        <span className="pane-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          💬 Chat Session ({sessionId === 'new' ? 'Draft' : sessionId.slice(0, 12)})
-          <span
-            className={`status-dot ${isWsConnected ? 'online' : 'offline'}`}
-            title={isWsConnected ? 'WS active' : 'WS offline'}
-            style={{ width: 6, height: 6 }}
-          />
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span className="pane-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            💬 Chat Session ({sessionId === 'new' ? 'Draft' : sessionId.slice(0, 12)})
+            <span
+              className={`status-dot ${isWsConnected ? 'online' : 'offline'}`}
+              title={isWsConnected ? 'WS active' : 'WS offline'}
+              style={{ width: 6, height: 6 }}
+            />
+          </span>
+
+          {messages.length > 0 && (
+            <div className="session-header-stats">
+              <span className="stat-item" title="Общий UTF-8 размер сообщений JSON payload">
+                📦 {formatBytes(payloadStats.bytes)}
+              </span>
+              <span>•</span>
+              <span className="stat-item">
+                💬 {messages.length} сообщ.
+              </span>
+              <span>•</span>
+              <span className="stat-item" title="Приблизительная оценка количества токенов (chars / 4)">
+                ~{payloadStats.approxTokens.toLocaleString()} tok
+              </span>
+              {payloadStats.isHeavy && (
+                <span className="heavy-badge" title="Сессия превышает 500 KB payload">
+                  ⚠️ Тяжёлая сессия
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           {streamingResponse && (
             <button

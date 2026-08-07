@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { clientFor } from '../api/client';
+import { formatBytes, sessionPayloadSize, type SessionPayloadStats } from '../utils/_sessionSize';
 import type { AgentTarget } from '../types/agent';
+import type { HermesSession, SessionMessagesResponse } from '../types/hermes';
 
 interface SessionListProps {
   agent: AgentTarget;
@@ -12,6 +14,72 @@ interface SessionListProps {
 }
 
 const PAGE_SIZE = 15;
+
+interface SessionListItemProps {
+  session: HermesSession;
+  agentId: string;
+  isActive: boolean;
+  onSelect: () => void;
+}
+
+function SessionListItem({ session, agentId, isActive, onSelect }: SessionListItemProps) {
+  const queryClient = useQueryClient();
+
+  // Реактивная подписка на кэш размера (без сетевых запросов)
+  const { data: cachedStats } = useQuery<SessionPayloadStats | null>({
+    queryKey: ['session-size', agentId, session.id],
+    queryFn: () => null,
+    enabled: false,
+    staleTime: Infinity,
+  });
+
+  const date = session.started_at 
+    ? new Date(session.started_at).toLocaleDateString() 
+    : '—';
+
+  // 1. Прямой размер из DTO сервера (если есть)
+  let displayBytes: number | null = typeof session.bytes === 'number' && session.bytes > 0 ? session.bytes : null;
+  let displayTokens: number | null = typeof session.total_tokens === 'number' && session.total_tokens > 0 ? session.total_tokens : null;
+
+  // 2. Размер из кэша уже открытых сессий (Вариант 1)
+  if (!displayBytes && cachedStats?.bytes) {
+    displayBytes = cachedStats.bytes;
+  } else if (!displayBytes) {
+    const cachedMessages = queryClient.getQueryData<SessionMessagesResponse>(['messages', agentId, session.id]);
+    if (cachedMessages?.messages?.length) {
+      const computed = sessionPayloadSize(cachedMessages.messages);
+      displayBytes = computed.bytes;
+    }
+  }
+
+  if (!displayTokens && cachedStats?.approxTokens) {
+    displayTokens = cachedStats.approxTokens;
+  }
+
+  return (
+    <div
+      className={`session-item ${isActive ? 'active' : ''}`}
+      onClick={onSelect}
+    >
+      <div className="session-title">{session.title || session.display_name || `Session ${session.id.slice(0, 8)}`}</div>
+      <div className="session-preview">{session.preview || 'Нет сообщений'}</div>
+      <div className="session-footer">
+        <span>💬 {session.message_count ?? 0} сообщ.</span>
+        {displayBytes !== null && (
+          <span className="session-size-badge" title={`Размер payload: ${displayBytes.toLocaleString()} байт`}>
+            📦 {formatBytes(displayBytes)}
+          </span>
+        )}
+        {displayTokens !== null && (
+          <span className="session-size-badge" title="Ориентировочное число токенов">
+            ⚡ {displayTokens.toLocaleString()} tok
+          </span>
+        )}
+        <span>{date}</span>
+      </div>
+    </div>
+  );
+}
 
 export default function SessionList({
   agent,
@@ -85,27 +153,15 @@ export default function SessionList({
           </div>
         )}
 
-        {sessions.map((session) => {
-          const isActive = selectedSessionId === session.id;
-          const date = session.started_at 
-            ? new Date(session.started_at).toLocaleDateString() 
-            : '—';
-
-          return (
-            <div
-              key={session.id}
-              className={`session-item ${isActive ? 'active' : ''}`}
-              onClick={() => onSelectSession(session.id)}
-            >
-              <div className="session-title">{session.title || session.display_name || `Session ${session.id.slice(0,8)}`}</div>
-              <div className="session-preview">{session.preview || 'Нет сообщений'}</div>
-              <div className="session-footer">
-                <span>💬 {session.message_count ?? 0} сообщений</span>
-                <span>{date}</span>
-              </div>
-            </div>
-          );
-        })}
+        {sessions.map((session) => (
+          <SessionListItem
+            key={session.id}
+            session={session}
+            agentId={agent.id}
+            isActive={selectedSessionId === session.id}
+            onSelect={() => onSelectSession(session.id)}
+          />
+        ))}
 
         {total > PAGE_SIZE && (
           <div className="pagination">
