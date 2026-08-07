@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-08-06
+goal: Demonstrate and lock working access to real sessions of real Hermes agents
+  (two local profiles)

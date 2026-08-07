@@ -1,0 +1,54 @@
+schema: spec-driven
+
+# Project context — показывается AI при создании артефактов OpenSpec.
+context: |
+  Project: hermes_plus (C:\ERV\projects-ex\hermes_plus)
+  Purpose: UI-оболочка (Vite + React 18 + TypeScript + TanStack Query) для Hermes Agent.
+  Principle: thin client to official Hermes dashboard web-API (port 9119). Never parse state.db / skills/*.md.
+
+  Source of truth for Hermes API:
+  - KB/README_SURVEY.md (REST map + live auth probe, Hermes 0.20.0)
+  - KB/README_WS_PROTOCOL.md (JSON-RPC WS chat)
+  - KB/README_FLEET.md (multi-agent control plane)
+  - KB/README_DEV.md (dev proxy, layers)
+
+  Auth (critical, live-verified 2026-08-06):
+  - Gated REST needs header X-Hermes-Session-Token
+  - Bearer does NOT open /api/skills or /api/sessions
+  - Token from env HERMES_DASHBOARD_SESSION_TOKEN or parse SESSION_TOKEN__ from GET http://127.0.0.1:9119/
+  - Dev: Vite proxy /api → 127.0.0.1:9119 (browser cannot send custom auth header cross-origin)
+
+  Current fleet targets (src/config/agents.ts):
+  - local:projects-ex (profile=projects-ex, baseUrl='')
+  - local:default (profile=default, baseUrl='')
+  One machine-level dashboard serves many profiles via ?profile=
+
+  Sessions API (verified live):
+  - GET /api/sessions?profile=&limit=&offset= → { sessions, total, limit, offset }
+  - GET /api/sessions/{id}/messages?profile= → { session_id, messages, pagination }
+  - GET /api/profiles/sessions — cross-profile on one host
+  - GET /api/sessions/stats?profile=
+
+  Conventions:
+  - AGENTS.md rules: Russian replies; don't apply source edits without «применяй»; new scratch files use _ prefix
+  - Prefer feature-detection via GET /api/status
+  - OpenSpec workflow: proposal → specs → design → tasks → implement → archive
+
+rules:
+  proposal:
+    - Keep proposals under ~500 words
+    - Always include Non-goals (or state them under What Changes / Impact)
+    - Capabilities names: kebab-case, one capability = one specs/<name>/spec.md
+  specs:
+    - Normative language: SHALL / MUST
+    - Every requirement has at least one #### Scenario with WHEN/THEN
+    - Scenarios must be testable against live Hermes on :9119 when about real access
+    - Prefer requirements that name concrete endpoints and response fields already verified in KB
+  design:
+    - Prefer reusing src/api/client.ts and src/config/agents.ts over new stacks
+    - Call out auth token handling (HTML parse vs env) and Vite proxy constraints
+    - Non-goals for period-1: multi-host BFF, chat UI, mutations (delete/rename sessions)
+  tasks:
+    - Checkbox format only: - [ ] X.Y description
+    - First tasks MUST prove live access (status 200 + non-empty real sessions) before UI polish
+    - Include explicit verification steps against profiles projects-ex and default
