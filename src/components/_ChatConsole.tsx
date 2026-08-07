@@ -27,11 +27,12 @@ export default function ChatConsole({ agent, sessionId, onSessionCreated }: Chat
 
   const wsClientRef = useRef<HermesWsClient | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
-  /** Флаг: сессия только что создана (была 'new'), ждём session.seeded с реальным ID */
-  const isNewSessionRef = useRef(sessionId === 'new');
-  // Обновляем флаг при смене sessionId
+  /** Gateway-внутренний ID сессии (для WS-операций: submitPrompt, interrupt).
+   *  Отличается от sessionId (DB ID для REST). Заполняется из session.seeded
+   *  или createSession. Сбрасывается при смене sessionId. */
+  const [gatewaySid, setGatewaySid] = useState<string | null>(null);
   useEffect(() => {
-    isNewSessionRef.current = sessionId === 'new';
+    setGatewaySid(null);
   }, [sessionId]);
   const client = clientFor(agent);
   const queryClient = useQueryClient();
@@ -99,16 +100,9 @@ export default function ChatConsole({ agent, sessionId, onSessionCreated }: Chat
         setIsWsConnected(connected);
         if (connected && ws && !isCancelled) {
           if (sessionId === 'new') {
-            try {
-              console.log('Registering new session on gateway...');
-              const res = await ws.createSession({ profile: agent.profile });
-              if (res && res.session_id && !isCancelled) {
-                console.log('Session registered successfully:', res.session_id);
-                onSessionCreated?.(res.session_id);
-              }
-            } catch (err) {
-              console.error('Failed to create new session on gateway:', err);
-            }
+            // Не создаём сессию здесь — иначе onSessionCreated → ремаунт →
+            // WS закроется и gateway-сессия умрёт. Ждём handleSend.
+            console.log('WS ready for new session creation');
           } else {
             try {
               console.log('Resuming session on gateway:', sessionId);
@@ -189,16 +183,9 @@ export default function ChatConsole({ agent, sessionId, onSessionCreated }: Chat
           setIsStopping(false);
         } else if (type === 'session.seeded' || type === 'session.info') {
           const seededId = payload.session_id || payload.id || event.session_id;
-          if (seededId && seededId !== sessionId) {
-            // Для НОВЫХ сессий (только что созданных через createSession) —
-            // gateway мог дать другой ID, обновляем. Для существующих —
-            // session.seeded лишь подтверждает загрузку в PTY, ID не меняем.
-            if (isNewSessionRef.current) {
-              console.log('Seeded active session ID updated:', seededId);
-              onSessionCreated?.(String(seededId));
-            } else {
-              console.debug('Gateway seeded with internal ID:', seededId, '(keeping DB ID:', sessionId, ')');
-            }
+          if (seededId) {
+            setGatewaySid(String(seededId));
+            console.debug('Gateway session ID:', seededId, '(DB ID:', sessionId, ')');
           }
         }
       };
@@ -237,19 +224,30 @@ export default function ChatConsole({ agent, sessionId, onSessionCreated }: Chat
 
     try {
       if (wsClientRef.current && isWsConnected) {
-        let activeSid = sessionId;
+        // gatewaySid — для WS-операций; sessionId — DB ID для REST
+        let activeSid = gatewaySid || sessionId;
+        let newSessionDbId: string | null = null;
         
         // Если сессия еще в статусе 'new', регистрируем ее прямо сейчас
         if (activeSid === 'new') {
           const res = await wsClientRef.current.createSession({ profile: agent.profile });
           if (res?.session_id) {
+            setGatewaySid(res.session_id);
             activeSid = res.session_id;
-            onSessionCreated?.(activeSid);
+            newSessionDbId = res.stored_session_id || res.session_id;
+            // НЕ вызываем onSessionCreated здесь — иначе React размонтирует
+            // компонент во время await submitPrompt и WS закроется.
           }
         }
 
         console.log(`Submitting prompt to session: ${activeSid}`);
         await wsClientRef.current.submitPrompt(activeSid, userText);
+
+        // Только теперь, когда prompt точно ушёл, сообщаем родителю новый ID.
+        // Ремаунт после этого безопасен — prompt уже отправлен.
+        if (newSessionDbId) {
+          onSessionCreated?.(newSessionDbId);
+        }
       } else {
         alert('WebSocket не подключен!');
         setStreamingResponse(null);
@@ -265,7 +263,8 @@ export default function ChatConsole({ agent, sessionId, onSessionCreated }: Chat
     if (!wsClientRef.current || !sessionId) return;
     setIsStopping(true);
     try {
-      await wsClientRef.current.interrupt(sessionId);
+      const activeSid = gatewaySid || sessionId;
+      await wsClientRef.current.interrupt(activeSid);
     } catch (err) {
       console.warn('Interrupt call failed:', err);
     }
