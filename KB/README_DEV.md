@@ -73,11 +73,23 @@ VITE_HERMES_L1_PASSWORD=...
 | Hooks | `src/hooks/useFleet.ts` | Опрос fleet (TanStack Query, refetch 30 c) |
 | UI | `src/App.tsx` | Скелет: таблица fleet-статуса (вид позже) |
 
-## Реестр агентов (config/agents.ts)
+## Реестр агентов (agents-config.json + config/agents.ts)
+
+**С 2026-08-07** источник правды — [`agents-config.json`](../agents-config.json)
+в корне проекта (декларативный JSON). Middleware `GET /api/agents` в
+`vite.config.ts` читает файл, раскрывает `${ENV_VAR}`-плейсхолдеры
+([`src/config/envSubst.ts`](../src/config/envSubst.ts)), валидирует и отдаёт
+клиенту. Клиент грузит через [`src/config/loadAgents.ts`](../src/config/loadAgents.ts);
+`src/config/agents.ts` — теперь `FALLBACK_AGENTS` + `getAgents()`/`getAgentsSync()`.
+Подробный формат — см. README_FLEET.md → «JSON-конфигурация».
 
 `baseUrl: ''` означает same-origin (через Vite proxy на локальный 9119).
 Для удалённых машин: Tailscale IP / туннель + токен в `auth.token`
 (или `HERMES_DASHBOARD_SESSION_TOKEN` на той машине).
+
+Быстрая проверка: `curl http://localhost:5173/api/agents` → `{ agents: [...] }`.
+При отсутствии/битом `agents-config.json` middleware вернёт 404/500, а клиент
+молча падёт на хардкод-fallback (console.warn).
 
 ## Проверка
 

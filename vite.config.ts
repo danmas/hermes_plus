@@ -1,5 +1,89 @@
 import { defineConfig, loadEnv, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { expandEnvPlaceholders } from './src/config/envSubst';
+import type { AgentTarget, AgentAuthType } from './src/types/agent';
+
+// ── Middleware GET /api/agents ────────────────────────────────────────────────
+// Читает agents-config.json из корня проекта, раскрывает ${ENV_VAR},
+// валидирует, отдаёт клиенту FleetConfig. Аутентификация не требуется.
+// Клиент (src/config/loadAgents.ts) на ошибку падает на хардкод-fallback.
+const VALID_AUTH_TYPES: AgentAuthType[] = ['none', 'session-token', 'bearer', 'cookie'];
+
+/** Проверка структуры конфига. Возвращает сообщение об ошибке или null. */
+function validateAgents(agents: unknown): string | null {
+  if (!Array.isArray(agents)) {
+    return 'поле "agents" должно быть массивом';
+  }
+  const seen = new Set<string>();
+  for (let i = 0; i < agents.length; i++) {
+    const a = agents[i] as Partial<AgentTarget>;
+    const where = `agents[${i}]`;
+    if (!a || typeof a !== 'object') return `${where}: элемент не является объектом`;
+    if (!a.id || typeof a.id !== 'string') return `${where}: отсутствует обязательное поле "id"`;
+    if (seen.has(a.id)) return `дублирующийся id агента: "${a.id}"`;
+    seen.add(a.id);
+    if (!a.name || typeof a.name !== 'string') {
+      return `${where} (id=${a.id}): отсутствует обязательное поле "name"`;
+    }
+    if (!a.auth || typeof a.auth !== 'object' || typeof a.auth.type !== 'string') {
+      return `${where} (id=${a.id}): отсутствует обязательное поле "auth.type"`;
+    }
+    if (!VALID_AUTH_TYPES.includes(a.auth.type as AgentAuthType)) {
+      return `${where} (id=${a.id}): недопустимый auth.type "${a.auth.type}"; допустимые: ${VALID_AUTH_TYPES.join(', ')}`;
+    }
+  }
+  return null;
+}
+
+function agentsConfigPlugin(env: Record<string, string>): Plugin {
+  const configPath = resolve(process.cwd(), 'agents-config.json');
+  return {
+    name: 'hermes-plus-agents-config',
+    configureServer(server) {
+      server.middlewares.use('/api/agents', async (req, res) => {
+        const sendJson = (status: number, body: unknown) => {
+          res.statusCode = status;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify(body));
+        };
+        try {
+          let raw: string;
+          try {
+            raw = await readFile(configPath, 'utf-8');
+          } catch {
+            sendJson(404, { error: 'agents-config.json not found' });
+            return;
+          }
+          let parsed: { agents?: unknown };
+          try {
+            parsed = JSON.parse(raw);
+          } catch (e) {
+            sendJson(500, {
+              error: 'Invalid JSON',
+              details: e instanceof Error ? e.message : String(e),
+            });
+            return;
+          }
+          // env-подстановка: middleware имеет доступ к полному env (loadEnv)
+          const resolved = expandEnvPlaceholders(parsed, env) as { agents?: unknown };
+          const validationError = validateAgents(resolved.agents);
+          if (validationError) {
+            sendJson(500, { error: 'Invalid agents config', details: validationError });
+            return;
+          }
+          sendJson(200, { agents: resolved.agents });
+        } catch (e) {
+          sendJson(500, {
+            error: 'agents middleware error',
+            details: e instanceof Error ? e.message : String(e),
+          });
+        }
+      });
+    },
+  };
+}
 
 // ── Мини-BFF для LAN-агента l1 (192.168.1.221) ────────────────────────────────
 // Браузер НЕ может ходить на 221 напрямую: auth_required:true, cookie-сессия
@@ -126,7 +210,7 @@ export default defineConfig(({ mode }) => {
   L1.password = env.VITE_HERMES_L1_PASSWORD || '';
 
   return {
-    plugins: [react(), l1ProxyPlugin()],
+    plugins: [react(), agentsConfigPlugin(env), l1ProxyPlugin()],
     server: {
       port: 5173,
       strictPort: true,

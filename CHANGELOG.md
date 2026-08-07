@@ -69,3 +69,18 @@
 - Корректный `session.resume` существующих сессий с передачей `profile`.
 - Кнопка прерывания генерации (Interrupt / `/stop` через `slash.exec`) в шапке чата и строке ввода при активном стриминге ответа.
 - Автообновление списка сессий в боковой панели после завершения генерации ответа (`turn.end`).
+- **JSON-конфигурация реестра агентов** (`agents-config.json`): декларативный
+  список AgentTarget вместо хардкода в TS. Подстановка `${ENV_VAR}` для кред,
+  документированный шаблон `agents-config.json.example`.
+- Vite middleware `GET /api/agents`: чтение JSON, env-подстановка, валидация
+  (уникальные id, обязательные name/auth.type, enum auth-типов), 404/500 с деталями.
+- Модули `src/config/envSubst.ts` (`expandEnvPlaceholders`) и
+  `src/config/loadAgents.ts` (`loadAgentsFromConfig` с fallback).
+
+### Изменено (json-agents-config)
+
+- `src/config/agents.ts`: хардкод стал `FALLBACK_AGENTS`; добавлены
+  `getAgents()` / `getAgentsSync()`; `AGENTS` — deprecated-алиас fallback-а.
+- `src/App.tsx`: асинхронная загрузка агентов через `getAgents()` с
+  синхронным fallback при старте.
+- KB: README_FLEET (секция «JSON-конфигурация»), README_DEV (agents-config.json).

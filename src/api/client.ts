@@ -227,10 +227,17 @@ export class HermesClient {
   }
 
   /** Сообщения сессии — envelope { session_id, messages, pagination } */
-  getSessionMessages(sessionId: string) {
-    return this.request<import('../types/hermes').SessionMessagesResponse>(
-      `/api/sessions/${encodeURIComponent(sessionId)}/messages`,
-    );
+  async getSessionMessages(sessionId: string) {
+    try {
+      return await this.request<import('../types/hermes').SessionMessagesResponse>(
+        `/api/sessions/${encodeURIComponent(sessionId)}/messages`,
+      );
+    } catch (e) {
+      if (e instanceof HermesApiError && e.status === 404) {
+        return { session_id: sessionId, messages: [] };
+      }
+      throw e;
+    }
   }
 
   getProfiles() {

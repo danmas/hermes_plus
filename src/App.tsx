@@ -1,23 +1,42 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import './_index.css';
-import { AGENTS } from './config/agents';
+import { getAgents, getAgentsSync } from './config/agents';
+import type { AgentTarget } from './types/agent';
 import { useFleet } from './hooks/useFleet';
 import FleetSelector from './components/_FleetSelector';
 import SessionList from './components/_SessionList';
 import ChatConsole from './components/_ChatConsole';
 
 export default function App() {
-  const [selectedAgentId, setSelectedAgentId] = useState<string>(AGENTS[0]?.id ?? '');
+  // Реестр агентов: сначала синхронный fallback, затем async-загрузка из
+  // agents-config.json (middleware /api/agents). Редактируйте JSON, не этот код.
+  const [agents, setAgents] = useState<AgentTarget[]>(() => getAgentsSync());
+  const [selectedAgentId, setSelectedAgentId] = useState<string>(agents[0]?.id ?? '');
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
-  
+
   // Состояние сворачивания панелей
   const [isFleetCollapsed, setIsFleetCollapsed] = useState(false);
   const [isSessionsCollapsed, setIsSessionsCollapsed] = useState(false);
 
-  // Опрос fleet раз в 30 секунд
-  const { data: fleetHealth, isLoading, refetch } = useFleet(AGENTS, { withCounts: true });
+  useEffect(() => {
+    let cancelled = false;
+    getAgents().then((loaded) => {
+      if (cancelled) return;
+      setAgents(loaded);
+      // если выбранного агента нет в загруженном списке — выбрать первый
+      setSelectedAgentId((prev) =>
+        loaded.some((a) => a.id === prev) ? prev : loaded[0]?.id ?? '',
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-  const activeAgent = AGENTS.find((a) => a.id === selectedAgentId) ?? AGENTS[0];
+  // Опрос fleet раз в 30 секунд
+  const { data: fleetHealth, isLoading, refetch } = useFleet(agents, { withCounts: true });
+
+  const activeAgent = agents.find((a) => a.id === selectedAgentId) ?? agents[0];
 
   const handleSelectAgent = (id: string) => {
     setSelectedAgentId(id);
@@ -28,7 +47,7 @@ export default function App() {
     <div className="app-container">
       {/* 1. Fleet & Health Selector */}
       <FleetSelector
-        agents={AGENTS}
+        agents={agents}
         fleetHealth={fleetHealth}
         isLoading={isLoading}
         selectedAgentId={selectedAgentId}

@@ -1,6 +1,10 @@
 /**
- * Реестр агентов (fleet config).
- * Заполняется руками — см. KB/README_FLEET.md, модель AgentTarget.
+ * Реестр агентов (fleet config) — FALLBACK.
+ *
+ * ⚠️  Основной источник правды — `agents-config.json` в корне проекта.
+ *     Редактируйте его, чтобы добавить/убрать агента (см. KB/README_FLEET.md).
+ *     Этот массив используется как fallback, если middleware `/api/agents`
+ *     недоступен (файл удалён, ошибка валидации, non-dev сборка).
  *
  * baseUrl='' означает same-origin: запрос идёт на Vite (5173), который
  * проксирует на 127.0.0.1:9119 (см. vite.config.ts). Это dev-режим.
@@ -10,8 +14,9 @@
  * HERMES_L1_PASSWORD — никогда литералами (см. openspec hermes-auth).
  */
 import type { AgentTarget } from '../types/agent';
+import { loadAgentsFromConfig } from './loadAgents';
 
-export const AGENTS: AgentTarget[] = [
+export const FALLBACK_AGENTS: AgentTarget[] = [
   {
     id: 'local:projects-ex',
     name: 'Local Hermes / projects-ex',
@@ -45,3 +50,32 @@ export const AGENTS: AgentTarget[] = [
     tags: ['lan', 'l1'],
   },
 ];
+
+/**
+ * @deprecated Используйте `getAgents()` / `getAgentsSync()`.
+ * Оставлено для обратной совместимости; равно FALLBACK_AGENTS.
+ */
+export const AGENTS: AgentTarget[] = FALLBACK_AGENTS;
+
+/** Кэш агентов, загруженных из agents-config.json (через middleware). */
+let cachedAgents: AgentTarget[] | null = null;
+
+/**
+ * Асинхронно получить реестр агентов.
+ * Пробует `agents-config.json` (middleware /api/agents); при неудаче —
+ * возвращает FALLBACK_AGENTS. Результат кэшируется.
+ */
+export async function getAgents(): Promise<AgentTarget[]> {
+  if (cachedAgents) return cachedAgents;
+  const loaded = await loadAgentsFromConfig();
+  cachedAgents = loaded && loaded.length > 0 ? loaded : FALLBACK_AGENTS;
+  return cachedAgents;
+}
+
+/**
+ * Синхронный доступ: кэш (если `getAgents()` уже отработал) или fallback.
+ * Не инициирует загрузку — используйте `getAgents()` для актуальных данных.
+ */
+export function getAgentsSync(): AgentTarget[] {
+  return cachedAgents ?? FALLBACK_AGENTS;
+}

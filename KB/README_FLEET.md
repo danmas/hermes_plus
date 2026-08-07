@@ -105,6 +105,84 @@ agents:
 
 Один `baseUrl` обслуживает несколько профилей через `?profile=`.
 
+## JSON-конфигурация (agents-config.json)
+
+**Актуально с 2026-08-07.** Реестр агентов вынесен из TypeScript в декларативный
+JSON-файл [`agents-config.json`](../agents-config.json) в корне проекта.
+Хардкод-массив в [`src/config/agents.ts`](../src/config/agents.ts) остаётся
+**fallback-ом** на случай недоступности JSON.
+
+### Как это работает
+
+```
+agents-config.json  ──►  Vite middleware GET /api/agents  ──►  клиент
+     (на диске)            (читает, раскрывает ${ENV}, валидирует)   (fetch)
+```
+
+1. Middleware в [`vite.config.ts`](../vite.config.ts) читает `agents-config.json`.
+2. Раскрывает `${VAR_NAME}`-плейсхолдеры через env ([`src/config/envSubst.ts`](../src/config/envSubst.ts)).
+3. Валидирует: уникальные `id`, обязательные `name` / `auth.type`, допустимый auth-enum.
+4. Отдаёт клиенту `{ agents: [...] }`.
+5. Клиент ([`src/config/loadAgents.ts`](../src/config/loadAgents.ts)) делает
+   `fetch('/api/agents')`; при ошибке — `null` → fallback на `FALLBACK_AGENTS`.
+
+### Формат файла
+
+```json
+{
+  "agents": [
+    {
+      "id": "local:projects-ex",
+      "name": "Local Hermes / projects-ex",
+      "baseUrl": "",
+      "profile": "projects-ex",
+      "auth": { "type": "session-token" },
+      "tags": ["local", "main"]
+    },
+    {
+      "id": "l1:default",
+      "name": "L1 Hermes / default (192.168.1.221)",
+      "baseUrl": "",
+      "proxyPath": "/l1",
+      "profile": "default",
+      "auth": {
+        "type": "cookie",
+        "username": "${VITE_HERMES_L1_USERNAME}",
+        "password": "${VITE_HERMES_L1_PASSWORD}"
+      },
+      "tags": ["lan", "l1"]
+    }
+  ]
+}
+```
+
+### Env-переменные (${VAR_NAME})
+
+- Любое строковое значение поддерживает `${VAR_NAME}`.
+- Middleware подставляет значение из окружения (`.env.local` → `import.meta.env`
+  на клиенте / `process.env` в Node); не заданная переменная → **пустая строка** + warning.
+- **Креды НИКОГДА не пишутся литералами** — только `${ENV_VAR}`. Файл коммитится
+  (содержит лишь плейсхолдеры).
+
+### Как добавить агента
+
+1. Открыть `agents-config.json`, добавить объект в массив `agents` (уникальный `id`).
+2. Секретные значения — через `${VITE_XXX}` (задать в `.env.local`).
+3. Перезагрузить страницу (Vite HMR не следит за файлами вне `src/`).
+4. Проверить: `curl http://localhost:5173/api/agents`.
+
+Документированный шаблон со всеми полями и типами auth —
+[`agents-config.json.example`](../agents-config.json.example).
+
+### Ошибки и fallback
+
+| Ситуация | Ответ `/api/agents` | Поведение клиента |
+|----------|---------------------|-------------------|
+| Файл отсутствует | 404 | fallback + console.warn |
+| Битый JSON | 500 `{ error, details }` | fallback + console.warn |
+| Дубль `id` / нет `name` / плохой auth.type | 500 `{ error, details }` | fallback + console.warn |
+| Всё ок | 200 `{ agents }` | использует загруженные агенты |
+
 ## Сеть: как достучаться до машин
 
 | Способ | Когда | Комментарий |

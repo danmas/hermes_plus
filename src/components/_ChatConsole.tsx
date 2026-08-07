@@ -27,6 +27,12 @@ export default function ChatConsole({ agent, sessionId, onSessionCreated }: Chat
 
   const wsClientRef = useRef<HermesWsClient | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  /** Флаг: сессия только что создана (была 'new'), ждём session.seeded с реальным ID */
+  const isNewSessionRef = useRef(sessionId === 'new');
+  // Обновляем флаг при смене sessionId
+  useEffect(() => {
+    isNewSessionRef.current = sessionId === 'new';
+  }, [sessionId]);
   const client = clientFor(agent);
   const queryClient = useQueryClient();
 
@@ -184,8 +190,15 @@ export default function ChatConsole({ agent, sessionId, onSessionCreated }: Chat
         } else if (type === 'session.seeded' || type === 'session.info') {
           const seededId = payload.session_id || payload.id || event.session_id;
           if (seededId && seededId !== sessionId) {
-            console.log('Seeded active session ID updated:', seededId);
-            onSessionCreated?.(String(seededId));
+            // Для НОВЫХ сессий (только что созданных через createSession) —
+            // gateway мог дать другой ID, обновляем. Для существующих —
+            // session.seeded лишь подтверждает загрузку в PTY, ID не меняем.
+            if (isNewSessionRef.current) {
+              console.log('Seeded active session ID updated:', seededId);
+              onSessionCreated?.(String(seededId));
+            } else {
+              console.debug('Gateway seeded with internal ID:', seededId, '(keeping DB ID:', sessionId, ')');
+            }
           }
         }
       };

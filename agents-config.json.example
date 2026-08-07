@@ -1,0 +1,78 @@
+// agents-config.json.example
+// ─────────────────────────────────────────────────────────────────────────────
+// Шаблон реестра агентов (fleet inventory) для hermes_plus.
+//
+// Скопируйте в `agents-config.json` и отредактируйте под свои агенты.
+// Рабочий файл `agents-config.json` — обычный JSON (без комментариев!).
+// Этот .example — JSONC (с комментариями) только для документации.
+//
+// Middleware `GET /api/agents` (см. vite.config.ts) читает agents-config.json,
+// подставляет ${ENV_VAR} из окружения, валидирует и отдаёт клиенту.
+//
+// ── Подстановка переменных окружения ────────────────────────────────────────
+// Любое строковое значение поддерживает синтаксис ${VAR_NAME}.
+//   "password": "${VITE_HERMES_L1_PASSWORD}"
+// заменится на значение process.env.VITE_HERMES_L1_PASSWORD.
+// Если переменная не задана — подставится пустая строка + warning в консоль.
+// Креды НИКОГДА не пишутся литералами — только через ${ENV_VAR}.
+// Задавайте их в `.env.local` (не коммитится).
+//
+// ── Поля AgentTarget ────────────────────────────────────────────────────────
+//   id        (string, required, unique) — уникальный идентификатор агента
+//   name      (string, required)         — человекочитаемая метка
+//   baseUrl   (string)                   — http://host:9119; '' = same-origin
+//                                          через Vite proxy (dev-режим)
+//   proxyPath (string, optional)         — префикс dev-proxy, напр. '/l1'
+//   profile   (string, optional)         — профиль Hermes: 'default' | ...
+//   auth      (object, required)         — механизм авторизации (см. ниже)
+//   tags      (string[], optional)       — произвольные метки
+//
+// ── auth.type (enum) ────────────────────────────────────────────────────────
+//   "none"          — публичные роуты без авторизации
+//   "session-token" — X-Hermes-Session-Token (loopback, локальные профили)
+//   "bearer"        — Authorization: Bearer <token>
+//   "cookie"        — cookie-сессия (gated LAN-агенты, через BFF /l1)
+//
+// auth-поля:
+//   token    (string) — для session-token / bearer
+//   username (string) — для cookie
+//   password (string) — для cookie
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  "agents": [
+    // Пример 1: локальный агент, профиль projects-ex (session-token, loopback)
+    {
+      "id": "local:projects-ex",
+      "name": "Local Hermes / projects-ex",
+      "baseUrl": "",
+      "profile": "projects-ex",
+      "auth": { "type": "session-token" },
+      "tags": ["local", "main"]
+    },
+
+    // Пример 2: локальный агент, профиль default (session-token)
+    {
+      "id": "local:default",
+      "name": "Local Hermes / default",
+      "baseUrl": "",
+      "profile": "default",
+      "auth": { "type": "session-token" },
+      "tags": ["local"]
+    },
+
+    // Пример 3: LAN-агент через мини-BFF /l1 (cookie-auth, креды из env)
+    {
+      "id": "l1:default",
+      "name": "L1 Hermes / default (192.168.1.221)",
+      "baseUrl": "",
+      "proxyPath": "/l1",
+      "profile": "default",
+      "auth": {
+        "type": "cookie",
+        "username": "${VITE_HERMES_L1_USERNAME}",
+        "password": "${VITE_HERMES_L1_PASSWORD}"
+      },
+      "tags": ["lan", "l1"]
+    }
+  ]
+}

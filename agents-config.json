@@ -1,0 +1,33 @@
+{
+  "agents": [
+    {
+      "id": "local:projects-ex",
+      "name": "Local Hermes / projects-ex",
+      "baseUrl": "",
+      "profile": "projects-ex",
+      "auth": { "type": "session-token" },
+      "tags": ["local", "main"]
+    },
+    {
+      "id": "local:default",
+      "name": "Local Hermes / default",
+      "baseUrl": "",
+      "profile": "default",
+      "auth": { "type": "session-token" },
+      "tags": ["local"]
+    },
+    {
+      "id": "l1:default",
+      "name": "L1 Hermes / default (192.168.1.221)",
+      "baseUrl": "",
+      "proxyPath": "/l1",
+      "profile": "default",
+      "auth": {
+        "type": "cookie",
+        "username": "${VITE_HERMES_L1_USERNAME}",
+        "password": "${VITE_HERMES_L1_PASSWORD}"
+      },
+      "tags": ["lan", "l1"]
+    }
+  ]
+}
