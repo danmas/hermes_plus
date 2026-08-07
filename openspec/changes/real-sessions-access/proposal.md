@@ -49,5 +49,5 @@ Hermes-агентов**, включая агента в LAN, и закрепит
   `vite.config.ts` (прокси на удалённого агента), Sessions-вью.
 - **Риск (браузер):** cookie-механизм для 221 требует прокси (CORS + HttpOnly куки),
   поэтому dev-прокси становится обязательным путём, а не удобством.
-- **Docs:** `KB/README_SURVEY.md`, `KB/README_hermes_dashboard_221.md`,
+- **Docs:** `KB/README_SURVEY.md`, `KB/README_DEV.md` (мини-BFF для l1),
   `KB/README_FLEET.md`, `CHANGELOG.md`.

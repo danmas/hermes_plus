@@ -73,7 +73,7 @@
 |------|------------|
 | Token rotates each Hermes restart (unless env set) | Re-fetch HTML token; document `HERMES_DASHBOARD_SESSION_TOKEN` for stability |
 | Cookie session expires (Max-Age 43200 s) or rotates | Re-login transparently on 401; keep login behind single `ensureAuth()` |
-| LAN agent IP dynamic (DHCP) | README_hermes_dashboard_221.md documents `hostname -I`; registry baseUrl is the only place to change |
+| LAN agent IP dynamic (DHCP) | `hostname -I` on the host; registry baseUrl is the only place to change |
 | Credentials leak into repo | env-only (`HERMES_L1_USERNAME`/`HERMES_L1_PASSWORD`); CI/review checks; never in `src/config/agents.ts` |
 | Large messages payload (100k–500k+ JSON) | Load messages only on selection; show count first |
 | Default page size 20 hides true total | Always surface `total`; support limit/offset in client |
