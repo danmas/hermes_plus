@@ -107,9 +107,12 @@ function loadConfig(cwd) {
     cookieSecure,
     localOrigin: get("HERMES_LOCAL_ORIGIN", "http://127.0.0.1:9119").replace(/\/$/, ""),
     l1Origin: get("HERMES_L1_ORIGIN", "http://192.168.1.221:9119").replace(/\/$/, ""),
+    l254Origin: get("HERMES_L254_ORIGIN", "http://192.168.1.254:9119").replace(/\/$/, ""),
     sessionToken: get("HERMES_DASHBOARD_SESSION_TOKEN") || null,
     l1Username: get("HERMES_L1_USERNAME", get("VITE_HERMES_L1_USERNAME")),
     l1Password: get("HERMES_L1_PASSWORD", get("VITE_HERMES_L1_PASSWORD")),
+    l254Username: get("HERMES_L254_USERNAME", get("VITE_HERMES_L254_USERNAME")),
+    l254Password: get("HERMES_L254_PASSWORD", get("VITE_HERMES_L254_PASSWORD")),
     distDir: get("BFF_DIST_DIR", resolve(cwd, "dist"))
   };
 }
@@ -384,6 +387,47 @@ function resetL1Jar() {
 async function fetchL1WsTicket(cfg2, jar) {
   try {
     const res = await fetch(cfg2.l1Origin + "/api/auth/ws-ticket", {
+      method: "POST",
+      headers: { Cookie: jar, Accept: "application/json" }
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.ticket ?? null;
+  } catch {
+    return null;
+  }
+}
+var l254Jar = "";
+var l254LoginPromise = null;
+function ensureL254Login(cfg2) {
+  if (l254Jar) return Promise.resolve(l254Jar);
+  if (!l254LoginPromise) {
+    l254LoginPromise = (async () => {
+      if (!cfg2.l254Username || !cfg2.l254Password) {
+        throw new Error("\u043A\u0440\u0435\u0434\u044B .254 \u043D\u0435 \u0437\u0430\u0434\u0430\u043D\u044B (HERMES_L254_USERNAME / HERMES_L254_PASSWORD)");
+      }
+      const res = await fetch(cfg2.l254Origin + "/auth/password-login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: "basic", username: cfg2.l254Username, password: cfg2.l254Password })
+      });
+      if (!res.ok) throw new Error(`L254 login failed: HTTP ${res.status}`);
+      const setCookies = res.headers.getSetCookie?.() ?? [];
+      l254Jar = setCookies.map((c) => c.split(";")[0]).filter((c) => /^hermes_session_(at|rt|provider)=/.test(c)).join("; ");
+      if (!l254Jar) throw new Error("L254 login succeeded but no session cookies");
+      return l254Jar;
+    })().finally(() => {
+      l254LoginPromise = null;
+    });
+  }
+  return l254LoginPromise;
+}
+function resetL254Jar() {
+  l254Jar = "";
+}
+async function fetchL254WsTicket(cfg2, jar) {
+  try {
+    const res = await fetch(cfg2.l254Origin + "/api/auth/ws-ticket", {
       method: "POST",
       headers: { Cookie: jar, Accept: "application/json" }
     });
@@ -688,6 +732,41 @@ app.all("/l1/*", async (c) => {
     return c.json({ error: "Bad Gateway", details: "\u0430\u0433\u0435\u043D\u0442 l1 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D" }, 502);
   }
 });
+var L254_DENY = /* @__PURE__ */ new Set(["/api/auth/ws-ticket", "/auth/password-login", "/api/auth/session-token"]);
+app.all("/l254/*", async (c) => {
+  const incoming = c.env.incoming;
+  const url = new URL(c.req.url);
+  const stripped = url.pathname.replace(/^\/l254/, "") || "/";
+  if (L254_DENY.has(stripped)) {
+    return c.json({ error: "Not Found" }, 404);
+  }
+  const upstreamPath = stripped + url.search;
+  const method = incoming.method ?? "GET";
+  const baseHeaders = pickRequestHeaders(incoming.headers);
+  const hasBody = method !== "GET" && method !== "HEAD";
+  const doRequest = async (jar) => {
+    return relayToUpstream({
+      origin: cfg.l254Origin,
+      path: upstreamPath,
+      method,
+      headers: { ...baseHeaders, ...jar ? { cookie: jar } : {} },
+      body: hasBody ? incoming : null
+    });
+  };
+  try {
+    let jar = await ensureL254Login(cfg).catch(() => "");
+    const up = await doRequest(jar);
+    if (up.status === 401 && !hasBody) {
+      resetL254Jar();
+      jar = await ensureL254Login(cfg).catch(() => "");
+      return toHonoResponse(await doRequest(jar));
+    }
+    return toHonoResponse(up);
+  } catch (e) {
+    console.warn(`[bff] l254 proxy error (${upstreamPath}):`, e instanceof Error ? e.message : String(e));
+    return c.json({ error: "Bad Gateway", details: "\u0430\u0433\u0435\u043D\u0442 .254 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D" }, 502);
+  }
+});
 var SPA_INDEX_PATH = resolve2(cfg.distDir, "index.html");
 function spaIndexResponse(c) {
   if (!existsSync2(SPA_INDEX_PATH)) {
@@ -756,6 +835,30 @@ nodeServer.on("upgrade", (req, socket, head) => {
             };
           } catch (e) {
             console.warn("[bff:ws] l1 prepare failed:", e instanceof Error ? e.message : String(e));
+            return null;
+          }
+        }
+      });
+      return;
+    }
+    if (pathname === "/l254/api/ws") {
+      await handleUpgrade({
+        req,
+        socket,
+        head,
+        wss,
+        prepare: async (q) => {
+          try {
+            const jar = await ensureL254Login(cfg);
+            const ticket = await fetchL254WsTicket(cfg, jar);
+            if (!ticket) return null;
+            q.set("ticket", ticket);
+            return {
+              url: toWsUrl(cfg.l254Origin, "/api/ws", `?${q.toString()}`),
+              headers: { Cookie: jar }
+            };
+          } catch (e) {
+            console.warn("[bff:ws] l254 prepare failed:", e instanceof Error ? e.message : String(e));
             return null;
           }
         }

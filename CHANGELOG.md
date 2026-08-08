@@ -152,6 +152,17 @@
 
 ## [0.3.1] - 2026-08-08
 
+### Добавлено
+
+- Второй LAN-upstream в prod-BFF: маршрут `/l254/*` (REST + WS `/l254/api/ws`)
+  с собственным cookie-jar (аналог `/l1`). Позволяет одному BFF показывать
+  агентов двух машин: `l1:default` (192.168.1.221) и `local:*` (.254, рабочий комп).
+  - `server/config.ts`: `l254Origin`, `l254Username`, `l254Password` (env `HERMES_L254_*`);
+  - `server/upstream.ts`: `ensureL254Login` / `resetL254Jar` / `fetchL254WsTicket`;
+  - `server/index.ts`: REST-прокси `/l254/*` (lazy-login, ретрай при 401) + WS-upgrade.
+- `agents-config.json`: local-агенты переведены на `proxyPath: "/l254"` (same-origin
+  через BFF, без CORS); креды — из env `HERMES_L254_USERNAME / HERMES_L254_PASSWORD`.
+
 ### Исправлено
 
 - Prod-BFF отдаёт `index.html` с заголовком `Cache-Control: no-cache, must-revalidate`

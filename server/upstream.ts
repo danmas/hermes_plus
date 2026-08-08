@@ -103,6 +103,62 @@ export async function fetchL1WsTicket(cfg: BffConfig, jar: string): Promise<stri
   }
 }
 
+// ── Cookie-jar .254 (рабочий комп, аналог l1) ────────────────────────────────
+
+let l254Jar = '';
+let l254LoginPromise: Promise<string> | null = null;
+
+/** Ленивый логин на .254: один раз (и после сброса jar), дальше переиспользуем. */
+export function ensureL254Login(cfg: BffConfig): Promise<string> {
+  if (l254Jar) return Promise.resolve(l254Jar);
+  if (!l254LoginPromise) {
+    l254LoginPromise = (async () => {
+      if (!cfg.l254Username || !cfg.l254Password) {
+        throw new Error('креды .254 не заданы (HERMES_L254_USERNAME / HERMES_L254_PASSWORD)');
+      }
+      const res = await fetch(cfg.l254Origin + '/auth/password-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: 'basic', username: cfg.l254Username, password: cfg.l254Password }),
+      });
+      if (!res.ok) throw new Error(`L254 login failed: HTTP ${res.status}`);
+      const setCookies = res.headers.getSetCookie?.() ?? [];
+      l254Jar = setCookies
+        .map((c) => c.split(';')[0])
+        .filter((c) => /^hermes_session_(at|rt|provider)=/.test(c))
+        .join('; ');
+      if (!l254Jar) throw new Error('L254 login succeeded but no session cookies');
+      return l254Jar;
+    })().finally(() => {
+      l254LoginPromise = null;
+    });
+  }
+  return l254LoginPromise;
+}
+
+export function resetL254Jar(): void {
+  l254Jar = '';
+}
+
+export function getL254Jar(): string {
+  return l254Jar;
+}
+
+/** Одноразовый WS-тикет .254 (TTL 30 с) — для WS-handshake, живёт только на сервере. */
+export async function fetchL254WsTicket(cfg: BffConfig, jar: string): Promise<string | null> {
+  try {
+    const res = await fetch(cfg.l254Origin + '/api/auth/ws-ticket', {
+      method: 'POST',
+      headers: { Cookie: jar, Accept: 'application/json' },
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { ticket?: string };
+    return data.ticket ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // ── REST-ретрансляция ─────────────────────────────────────────────────────────
 
 export interface UpstreamResponse {
