@@ -1,21 +1,24 @@
 # hermes_plus
 
-**Fleet control plane UI** для [Hermes Agent](https://github.com/NousResearch/hermes-agent) — единая браузерная оболочка над несколькими агентами (машины × профили).
+**Fleet control plane UI** для [Hermes Agent](https://github.com/NousResearch/hermes-agent) —
+единая браузерная оболочка над несколькими агентами (машины × профили).
 
-Не «второй Hermes», а **тонкий клиент** к официальному web-API дашборда (`hermes dashboard` / `hermes serve` на `:9119`): skills, sessions, status, чат по WebSocket.
+Не «второй Hermes», а **тонкий клиент** к официальному web-API дашборда
+(`hermes dashboard` / `hermes serve` на `:9119`): skills, sessions, status, чат по WebSocket.
 
 > Версия проекта: `0.1.0` · Целевая версия Hermes: **0.20.0** (Herald, 2026.8.3)  
-> Статус: рабочий скелет fleet UI + live-доступ к локальным и LAN-агентам
+> Статус: рабочий fleet UI (health · sessions · chat stream) + live-доступ к локальным и LAN-агентам
 
 ---
 
 ## Зачем
 
-Штатный `hermes dashboard` обслуживает **одну** установку. Когда агентов несколько (разные профили, разные машины), нужен единый operator console:
+Штатный `hermes dashboard` обслуживает **одну** установку. Когда агентов несколько
+(разные профили, разные машины), нужен единый operator console:
 
 - видеть, кто online и что у кого есть (skills / sessions);
 - переключаться между агентами и профилями;
-- читать историю сессий;
+- читать историю сессий (newest-first, размер, токены);
 - чатиться с выбранным агентом со стримом reasoning и tool-calls.
 
 Именно это делает **hermes_plus**.
@@ -30,8 +33,9 @@ React/Vite UI  (localhost:5173)
         │  REST + WS (same-origin)
         ▼
 Vite dev-proxy  ≈  мини-BFF
-  /api/*  →  127.0.0.1:9119
-  /l1/*   →  192.168.1.221:9119  (+ server-side cookie login)
+  /api/*      →  127.0.0.1:9119
+  /api/agents →  agents-config.json (+ env-subst)
+  /l1/*       →  192.168.1.221:9119  (+ server-side cookie login)
         │
         ▼
 Hermes web-API  (:9119)
@@ -46,6 +50,7 @@ Hermes web-API  (:9119)
 3. Почти все REST-роуты скоупятся `?profile=<name>`.
 4. Чат — **WebSocket JSON-RPC 2.0**, не OpenAI `/v1` (тот живёт в отдельном gateway-адаптере).
 5. Секреты только из env / `.env.local`, никогда в git.
+6. Feature-detection через `GET /api/status` / `/api/health` (`auth_required`, version).
 
 Подробности: [`KB/README_IDEA.md`](KB/README_IDEA.md), [`KB/README_FLEET.md`](KB/README_FLEET.md).
 
@@ -56,15 +61,16 @@ Hermes web-API  (:9119)
 | Область | Статус |
 |--------|--------|
 | Fleet overview (health, version, skills/sessions count) | ✅ |
-| Переключение активного агента | ✅ |
-| Список сессий + пагинация + сообщения | ✅ |
-| Чат по WS: стрим, reasoning, tool-calls, interrupt | ✅ |
-| Локальные профили (`projects-ex`, `default`) | ✅ |
-| LAN-агент с cookie-auth (password-login) | ✅ |
-| Session-token auth (loopback) | ✅ |
+| Переключение активного агента, сворачиваемые панели | ✅ |
+| Список сессий: пагинация, newest-first, даты, размер/токены | ✅ |
+| Чат по WS: стрим, reasoning, tool-calls, interrupt (`/stop`) | ✅ |
+| Создание / resume сессий (`session.create` / `session.resume`) | ✅ |
+| JSON-реестр агентов (`agents-config.json` + `${ENV}` + fallback) | ✅ |
+| Локальные профили (`projects-ex`, `default`) via session-token | ✅ |
+| LAN-агент с cookie-auth (password-login через мини-BFF `/l1`) | ✅ |
 | Feature-detection (`/api/status`, `auth_required`) | ✅ |
 | Skills browser (полноценный UI) | ⏳ next |
-| Продовый multi-host BFF (Tailscale, OAuth) | ⏳ next |
+| Prod multi-host BFF (Hono, Tailscale, OAuth) | ⏳ next |
 | A2A graph / orchestration | ⏳ later |
 
 ---
@@ -74,7 +80,7 @@ Hermes web-API  (:9119)
 - **React 18 + TypeScript + Vite 5**
 - **TanStack Query** — polling fleet / sessions
 - Нативный **WebSocket** — чат (JSON-RPC 2.0)
-- Dev-proxy Vite как временный BFF (cookie jar для gated-агентов)
+- Dev-proxy Vite как временный BFF (cookie jar, session-token endpoint, `/api/agents`)
 
 ---
 
@@ -93,21 +99,34 @@ hermes dashboard --status
 Проверка:
 
 ```bash
-curl -s http://127.0.0.1:9119/api/status | head
+curl -s http://127.0.0.1:9119/api/status
 ```
 
-### 2. Клонировать и запустить UI
+### 2. UI
 
 ```bash
-git clone https://github.com/danmas/hermes_plus.git
+git clone <repo-url>
 cd hermes_plus
 npm install
 npm run dev    # http://localhost:5173
 ```
 
-### 3. LAN-агент (опционально)
+### 3. Реестр агентов
 
-Если в реестре есть target с `auth: { type: 'cookie' }` (например `l1:default`):
+Скопируйте шаблон и отредактируйте:
+
+```bash
+cp agents-config.json.example agents-config.json
+# правьте agents-config.json — не src/config/agents.ts
+```
+
+Проверка: `curl http://localhost:5173/api/agents` → `{ "agents": [...] }`.
+
+При отсутствии/битом JSON клиент падает на `FALLBACK_AGENTS` из `src/config/agents.ts`.
+
+### 4. LAN-агент (опционально)
+
+Если в реестре есть target с `auth.type: "cookie"` (например `l1:default`):
 
 ```bash
 # .env.local (не коммитится)
@@ -115,52 +134,61 @@ VITE_HERMES_L1_USERNAME=roman
 VITE_HERMES_L1_PASSWORD=********
 ```
 
-Vite-плагин логинится server-side (`POST /auth/password-login`), держит HttpOnly-куки в памяти процесса и проксирует `/l1/*` → `http://192.168.1.221:9119`.
+Vite-плагин логинится server-side (`POST /auth/password-login`), держит HttpOnly-куки
+в памяти процесса и проксирует `/l1/*` → удалённый Hermes.
 
 ---
 
 ## Реестр агентов
 
-Файл [`src/config/agents.ts`](src/config/agents.ts) — ручной inventory.
+**Источник правды:** [`agents-config.json`](agents-config.json)  
+**Шаблон:** [`agents-config.json.example`](agents-config.json.example)
 
-```ts
+```
+agents-config.json  →  Vite middleware GET /api/agents  →  клиент
+                         (env-subst + валидация)          (loadAgents)
+```
+
+Пример записи:
+
+```json
 {
-  id: 'local:projects-ex',
-  name: 'Local Hermes / projects-ex',
-  baseUrl: '',                 // same-origin → Vite proxy → :9119
-  profile: 'projects-ex',
-  auth: { type: 'session-token' },
-  tags: ['local', 'main'],
+  "id": "local:projects-ex",
+  "name": "Local Hermes / projects-ex",
+  "baseUrl": "",
+  "profile": "projects-ex",
+  "auth": { "type": "session-token" },
+  "tags": ["local", "main"]
 }
 ```
 
 | Поле | Смысл |
 |------|--------|
 | `id` | Уникальный ключ (`host:profile`) |
-| `baseUrl` | `''` = через Vite proxy; иначе прямой URL |
+| `baseUrl` | `''` = same-origin через Vite proxy; иначе прямой URL |
 | `proxyPath` | Префикс dev-proxy для удалённого хоста (`/l1`) |
 | `profile` | Query `?profile=` на REST/WS |
 | `auth.type` | `session-token` \| `cookie` \| `bearer` \| `none` |
+| `auth.username` / `password` | Для cookie — через `${VITE_…}` из env |
 
 Модель: [`src/types/agent.ts`](src/types/agent.ts).  
-Как масштабировать на multi-machine: [`KB/README_FLEET.md`](KB/README_FLEET.md).
+Fleet / multi-machine: [`KB/README_FLEET.md`](KB/README_FLEET.md).
 
 ---
 
 ## Auth (два механизма)
 
-Снято с Hermes **0.20.0** вживую:
+Снято с Hermes **0.20.0** вживую (см. [`KB/README_SURVEY.md`](KB/README_SURVEY.md)):
 
 | Ситуация | `auth_required` | Как ходим |
 |----------|-----------------|-----------|
-| Loopback `127.0.0.1` | `false` | `X-Hermes-Session-Token` (токен из SPA HTML `GET /` или env) |
-| Gated (LAN/remote) | `true` | `POST /auth/password-login` → cookie-сессия `hermes_session_*` |
+| Loopback `127.0.0.1` | `false` | `X-Hermes-Session-Token` (из SPA HTML `GET /` или env `HERMES_DASHBOARD_SESSION_TOKEN`) |
+| Gated (LAN/remote) | `true` | `POST /auth/password-login` → cookie-сессия `hermes_session_*` (через BFF) |
 
-- Публичные: `/api/status`, `/api/health`, `/api/model/info`.
-- Gated без токена/cookie → **401**.
-- Наружу bind только с auth-провайдером; `--insecure` — no-op (deprecated).
-
-Детали и таблица эндпоинтов: [`KB/README_SURVEY.md`](KB/README_SURVEY.md).
+- Публичные: `/api/status`, `/api/health`, `/api/model/info`, …
+- Gated без токена/cookie → **401**
+- `Authorization: Bearer` **не** открывает skills/sessions (token-route по сути только drain)
+- Наружу bind только с auth-провайдером; `--insecure` — no-op (deprecated)
 
 ---
 
@@ -184,10 +212,10 @@ WS  /api/pub       publish
 WS  /api/events    стрим токенов + tool-calls
 ```
 
-Методы: `session.create` / `session.resume`, prompt submit, `slash.exec` (`/stop` = interrupt).  
+Методы: `session.create` / `session.resume`, `prompt.submit`, `slash.exec` (`/stop` = interrupt).  
 Протокол: [`KB/README_WS_PROTOCOL.md`](KB/README_WS_PROTOCOL.md).
 
-> OpenAI-compatible `/v1/chat/completions` — **отдельный** gateway platform adapter, не этот сервер на 9119.
+> OpenAI-compatible `/v1/chat/completions` — **отдельный** gateway platform adapter, не сервер на 9119.
 
 ---
 
@@ -195,18 +223,21 @@ WS  /api/events    стрим токенов + tool-calls
 
 ```
 hermes_plus/
+├── agents-config.json          # реестр агентов (источник правды)
+├── agents-config.json.example  # шаблон с комментариями
 ├── src/
-│   ├── api/           # REST (client.ts) + WS (ws.ts)
-│   ├── components/    # FleetSelector, SessionList, ChatConsole
-│   ├── config/        # agents.ts — fleet registry
-│   ├── hooks/         # useFleet
-│   ├── types/         # AgentTarget, Hermes DTO, WS frames
+│   ├── api/                    # REST (client.ts) + WS (ws.ts)
+│   ├── components/             # _FleetSelector, _SessionList, _ChatConsole
+│   ├── config/                 # agents.ts (fallback), loadAgents, envSubst
+│   ├── hooks/                  # useFleet
+│   ├── types/                  # AgentTarget, Hermes DTO, WS frames
+│   ├── utils/                  # session size / dates
 │   ├── App.tsx
 │   └── main.tsx
-├── KB/                # База знаний (оглавление → README_INDEX.md)
-├── openspec/          # Change proposals / specs
-├── vite.config.ts     # proxy + мини-BFF для /l1
-├── AGENTS.md          # Заметки для агентов/контрибьюторов
+├── KB/                         # База знаний (точка входа → README_INDEX.md)
+├── openspec/                   # Change proposals / specs
+├── vite.config.ts              # proxy + /api/agents + мини-BFF /l1
+├── AGENTS.md                   # правила для ИИ-агентов
 ├── CHANGELOG.md
 └── package.json
 ```
@@ -216,10 +247,13 @@ hermes_plus/
 ## Скрипты
 
 ```bash
-npm run dev       # Vite :5173
+npm run dev       # Vite :5173 (strictPort)
 npm run build     # tsc + vite build
 npm run preview   # preview production build
 ```
+
+**Dev-схема:** браузер → `localhost:5173/api/*` (same-origin) → Vite proxy → Hermes `:9119`.  
+Прямой browser → 9119 с `X-Hermes-Session-Token` ломается на CORS-preflight.
 
 ---
 
@@ -234,7 +268,7 @@ npm run preview   # preview production build
 | [README_DEV.md](KB/README_DEV.md) | Dev-запуск, proxy, слои |
 | [README_SURVEY.md](KB/README_SURVEY.md) | Живая карта API + auth |
 | [README_WS_PROTOCOL.md](KB/README_WS_PROTOCOL.md) | JSON-RPC WS чата |
-| [README_FLEET.md](KB/README_FLEET.md) | Multi-machine control plane |
+| [README_FLEET.md](KB/README_FLEET.md) | Multi-machine control plane, JSON-registry |
 
 Спеки изменений: [`openspec/changes/`](openspec/changes/).
 
@@ -243,9 +277,10 @@ npm run preview   # preview production build
 ## Ограничения (сейчас)
 
 - Dev-прокси = BFF. Для production multi-host нужен отдельный Hono/Express с хранением токенов/cookie server-side.
-- Реестр агентов ручной (`agents.ts`), без auto-discovery.
-- Skills UI — только счётчики в fleet-таблице, полноценного browser ещё нет.
+- Реестр агентов ручной (`agents-config.json`), без auto-discovery.
+- Skills UI — только счётчики в fleet-панели, полноценного browser ещё нет.
 - Нет OAuth / Tailscale-интеграции из коробки (сеть — на совести оператора).
+- Версия в `package.json` (`0.1.0`) пока не поднята под блок CHANGELOG `0.2.0`.
 
 ---
 

@@ -37,7 +37,10 @@ export default function ChatConsole({ agent, sessionId, onSessionCreated }: Chat
   }, [sessionId]);
   // Мемоизированный подсчет размера payload и токенов
   const payloadStats = useMemo(() => sessionPayloadSize(messages), [messages]);
-  const client = clientFor(agent);
+  const client = useMemo(
+    () => clientFor(agent),
+    [agent.id, agent.baseUrl, agent.proxyPath, agent.profile, agent.auth?.type, agent.auth?.token, agent.auth?.username, agent.auth?.password],
+  );
   const queryClient = useQueryClient();
 
   // Синхронизируем вычисленный вес открытой сессии в кэш для сайдбара
@@ -88,9 +91,14 @@ export default function ChatConsole({ agent, sessionId, onSessionCreated }: Chat
     let ws: HermesWsClient | null = null;
 
     const setupWs = async () => {
-      // 1. Получаем токен
-      await client.ensureAuth();
-      const activeToken = (client as any).token;
+      // 1. Получаем токен (loopback) или WS-тикет (cookie-auth / LAN)
+      let activeToken: string | null = null;
+      let activeTicket: string | null = null;
+      if (agent.proxyPath && agent.auth.type === 'cookie') {
+        activeTicket = await client.getWsTicket();
+      } else {
+        activeToken = await client.getToken();
+      }
 
       if (isCancelled) return;
 
@@ -101,6 +109,7 @@ export default function ChatConsole({ agent, sessionId, onSessionCreated }: Chat
       ws = new HermesWsClient({
         baseUrl: wsBaseUrl,
         token: activeToken ?? undefined,
+        ticket: activeTicket ?? undefined,
         profile: agent.profile,
       });
 
@@ -195,13 +204,8 @@ export default function ChatConsole({ agent, sessionId, onSessionCreated }: Chat
         } else if (type === 'session.seeded' || type === 'session.info') {
           const seededId = payload.session_id || payload.id || event.session_id;
           if (seededId) {
-            console.log('Gateway active session ID (runtime):', seededId);
+            console.debug('Gateway active session ID (runtime):', seededId);
             setGatewaySid(String(seededId));
-            // Only update parent App state if we were in 'new' (draft) mode
-            if (sessionId === 'new') {
-              const dbId = payload.stored_session_id || seededId;
-              onSessionCreated?.(String(dbId));
-            }
           }
         }
       };

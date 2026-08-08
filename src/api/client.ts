@@ -24,23 +24,45 @@ export class HermesApiError extends Error {
   }
 }
 
+let cachedLocalToken: string | null = null;
+
 /**
- * Вытащить SESSION_TOKEN__ из SPA HTML Hermes.
+ * Вытащить SESSION_TOKEN__ для Hermes.
  *
- * Ходим на прямой 127.0.0.1:9119 (НЕ через Vite proxy): проксированный `/`
- * отдаёт наш index.html, а не Hermes SPA. GET `/` — simple request без
- * кастомных заголовков, поэтому CORS-preflight не нужен и браузер его пускает
- * (CORS Hermes разрешает localhost-происхождения). Токен используем дальше
- * для API-запросов через прокси.
+ * 1. Пробуем получить через Vite dev-BFF (/api/auth/session-token, same-origin).
+ * 2. Fallback: прямой запрос на 127.0.0.1:9119/ (если не через прокси).
  */
 async function fetchSessionToken(baseUrl: string): Promise<string | null> {
+  if (!baseUrl && cachedLocalToken) {
+    return cachedLocalToken;
+  }
+  // 1. Через Vite dev-BFF (same-origin)
+  if (!baseUrl) {
+    try {
+      const bffRes = await fetch('/api/auth/session-token');
+      if (bffRes.ok) {
+        const data = await bffRes.json();
+        if (data?.token) {
+          cachedLocalToken = data.token;
+          return data.token;
+        }
+      }
+    } catch {
+      // игнорируем и пробуем прямой fetch
+    }
+  }
+
+  // 2. Fallback: прямой loopback (CORS разрешён на localhost)
   try {
-    // baseUrl='' → прямой loopback (токен живёт в Hermes, не в нашем Vite)
     const target = baseUrl || 'http://127.0.0.1:9119';
     const res = await fetch(`${target}/`);
     const html = await res.text();
     const m = html.match(/SESSION_TOKEN__\s*=\s*"([^"]+)"/);
-    return m ? m[1] : null;
+    if (m?.[1]) {
+      if (!baseUrl) cachedLocalToken = m[1];
+      return m[1];
+    }
+    return null;
   } catch {
     return null;
   }
@@ -71,6 +93,7 @@ export class HermesClient {
   private token: string | null = null;
   private cookies: string | null = null;
   private authMode: AuthMode | null = null;
+  private authPromise: Promise<void> | null = null;
   private username?: string;
   private password?: string;
   private timeoutMs: number;
@@ -98,6 +121,16 @@ export class HermesClient {
 
   /** Гарантировать auth: выбрать механизм, получить токен/куки */
   async ensureAuth(): Promise<void> {
+    if (this.authPromise) {
+      return this.authPromise;
+    }
+    this.authPromise = this.doEnsureAuth().finally(() => {
+      this.authPromise = null;
+    });
+    return this.authPromise;
+  }
+
+  private async doEnsureAuth(): Promise<void> {
     if (!this.authMode) {
       this.authMode = await this.detectAuthMode();
     }
@@ -106,6 +139,41 @@ export class HermesClient {
     }
     if (this.authMode === 'cookie' && !this.cookies) {
       this.cookies = await this.passwordLogin();
+    }
+    // Для proxyPath-агентов (BFF): получаем session-token через эндпоинт BFF
+    // чтобы WS-подключения могли аутентифицироваться на upstream Hermes
+    if (!this.token && this.proxyPath) {
+      try {
+        const res = await fetch(`${this.proxyPath}/api/auth/session-token`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.token) this.token = data.token;
+        }
+      } catch {
+        // не критично — WS попробует без токена
+      }
+    }
+  }
+
+  /** Получить сессионный токен (гарантирует завершение аутентификации) */
+  async getToken(): Promise<string | null> {
+    await this.ensureAuth();
+    return this.token;
+  }
+
+  /** Получить одноразовый WS-тикет для cookie-auth target через BFF */
+  async getWsTicket(): Promise<string | null> {
+    if (!this.proxyPath) return null;
+    try {
+      const res = await fetch(`${this.proxyPath}/api/auth/ws-ticket`, {
+        method: 'POST',
+        headers: { Accept: 'application/json' },
+      });
+      if (!res.ok) return null;
+      const data = (await res.json()) as { ticket?: string };
+      return data.ticket ?? null;
+    } catch {
+      return null;
     }
   }
 

@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { clientFor } from '../api/client';
 import { formatBytes, sessionPayloadSize, type SessionPayloadStats } from '../utils/_sessionSize';
+import { formatSessionWhen, sortSessionsNewestFirst } from '../utils/_sessionDates';
 import type { AgentTarget } from '../types/agent';
 import type { HermesSession, SessionMessagesResponse } from '../types/hermes';
 
@@ -33,9 +34,7 @@ function SessionListItem({ session, agentId, isActive, onSelect }: SessionListIt
     staleTime: Infinity,
   });
 
-  const date = session.started_at 
-    ? new Date(session.started_at).toLocaleDateString() 
-    : '—';
+  const when = formatSessionWhen(session.started_at, session.ended_at);
 
   // 1. Прямой размер из DTO сервера (если есть)
   let displayBytes: number | null = typeof session.bytes === 'number' && session.bytes > 0 ? session.bytes : null;
@@ -75,7 +74,7 @@ function SessionListItem({ session, agentId, isActive, onSelect }: SessionListIt
             ⚡ {displayTokens.toLocaleString()} tok
           </span>
         )}
-        <span>{date}</span>
+        <span title={when.title}>{when.label}</span>
       </div>
     </div>
   );
@@ -103,7 +102,8 @@ export default function SessionList({
     refetchInterval: 10_000, // периодически обновляем
   });
 
-  const sessions = data?.sessions ?? [];
+  const rawSessions = data?.sessions ?? [];
+  const sessions = useMemo(() => sortSessionsNewestFirst(rawSessions), [rawSessions]);
   const total = data?.total ?? 0;
 
   const handleNextPage = () => {

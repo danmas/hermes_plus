@@ -106,7 +106,7 @@ GET    /api/ssh/ownership
 
 ### Sessions (viewer сессий)
 ```
-GET    /api/sessions                     список
+GET    /api/sessions                     список (?limit=20&offset=0&profile=...)
 GET    /api/sessions/search?q=...        FTS5-поиск
 GET    /api/sessions/stats
 GET    /api/sessions/empty/count · DELETE /api/sessions/empty
@@ -120,6 +120,11 @@ POST   /api/sessions/bulk-delete | import | prune
 GET    /api/profiles/sessions            кросс-профильный список
 GET    /api/profiles/sessions/sidebar
 ```
+
+> **Заметки по `GET /api/sessions` (живой замер 2026-08-08):**
+> - **Сортировка:** API не принимает параметры сортировки (`order=desc` возвращает `400 Bad Request`, `sort=...` игнорируется). Дефолтный порядок выдачи — `started_at` DESC из SQLite. Клиент гарантирует Newest-First сортировку страницы через `sortSessionsNewestFirst`.
+> - **Формат таймстемпов:** `started_at`, `ended_at`, `last_active`, `last_activity_at` возвращаются в **секундах** Unix (float, напр. `1786122045.374`). В JS-клиенте нормализуются умножением на 1000 (`ts < 1e12 ? ts * 1000 : ts`).
+
 (роутеры: `list_router`, `search_router`, `manage_router` в `web_routers/sessions.py`;
 `sessions_router` в `web_routers/profiles.py`)
 

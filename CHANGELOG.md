@@ -93,6 +93,15 @@
 - Типы `HermesSession` в `src/types/hermes.ts` дополнены опциональными полями `bytes?: number` и `total_tokens?: number`.
 - OpenSpec: спецификация `openspec/changes/session-size-display` (валидация пройдена).
 
+### Добавлено (sessions-list-order-dates)
+
+- Утилиты `src/utils/_sessionDates.ts`: `normalizeTimestamp` (поддержка Unix-таймстемпов в секундах и миллисекундах), `sortSessionsNewestFirst` (детерминированная сортировка сессий по `started_at` DESC с fallback на `ended_at` и tie-break по `id`), `formatSessionWhen` (локализованное форматирование «Сегодня, HH:mm» / «Вчера, HH:mm» / «DD.MM.YYYY, HH:mm» с полным ISO-таймстемпом в hover `title`).
+- В списке сессий (`_SessionList.tsx`): гарантированный порядок Newest-First перед рендером и информативное отображение времени активности в карточках сессий.
+- База знаний (`KB/README_SURVEY.md`): зафиксированы результаты живого замера `GET /api/sessions` (отсутствие параметров сортировки и формат секундных таймстемпов).
+- OpenSpec: спецификация `openspec/changes/sessions-list-order-dates` (валидация пройдена).
+
 ### Исправлено
 
 - Исправлен конфликт идентификаторов сессий (`session.seeded`): внутренний runtime session ID шлюза больше не перезаписывает постоянный SQLite ID сессии в `App.tsx` при открытии существующих сессий, устраняя ошибку `404 Not Found` на `/messages` и последующую ошибку `RPC 4007: session not found`.
+- Исправлено преждевременное размонтирование `ChatConsole` при генерации в новой сессии: стабильный `key={activeAgent.id}` в `App.tsx` предотвращает уничтожение компонента и обрыв WebSocket во время стриминга ответа.
+- Исправлена ошибка `403 Forbidden` при WebSocket-рукопожатии (`/api/ws`): добавлен dev-BFF роут `/api/auth/session-token` в `vite.config.ts`, метод `HermesClient.getToken()` с мьютексом `authPromise` и кэшированием токена, предотвращены лишние циклы реконнекта в `ws.ts`.

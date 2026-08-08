@@ -81,6 +81,22 @@ function agentsConfigPlugin(env: Record<string, string>): Plugin {
           });
         }
       });
+
+      // Dev-эндпоинт получения session token из локального Hermes
+      server.middlewares.use('/api/auth/session-token', async (_req, res) => {
+        try {
+          const upstream = await fetch('http://127.0.0.1:9119/');
+          const html = await upstream.text();
+          const m = html.match(/SESSION_TOKEN__\s*=\s*"([^"]+)"/);
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ token: m ? m[1] : null }));
+        } catch (e) {
+          res.statusCode = 502;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ error: 'Failed to fetch session token from upstream', details: e instanceof Error ? e.message : String(e) }));
+        }
+      });
     },
   };
 }
@@ -95,36 +111,36 @@ const L1 = {
   origin: 'http://192.168.1.221:9119',
   username: '',
   password: '',
+  cookieJar: '',
+  loginPromise: null as Promise<string> | null,
 };
 
-function l1ProxyPlugin(): Plugin {
-  let cookieJar = '';
-  let loginPromise: Promise<string> | null = null;
-
-  /** Ленивый логин: один раз (и после 401), дальше переиспользуем jar */
-  async function ensureLogin(): Promise<string> {
-    if (cookieJar) return cookieJar;
-    if (!loginPromise) {
-      loginPromise = (async () => {
-        const loginRes = await fetch(L1.origin + '/auth/password-login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ provider: 'basic', username: L1.username, password: L1.password }),
-        });
-        if (!loginRes.ok) throw new Error(`L1 login failed: HTTP ${loginRes.status}`);
-        const setCookies = loginRes.headers.getSetCookie?.() ?? [];
-        cookieJar = setCookies
-          .map((c) => c.split(';')[0])
-          .filter((c) => /^hermes_session_(at|rt|provider)=/.test(c))
-          .join('; ');
-        if (!cookieJar) throw new Error('L1 login succeeded but no session cookies');
-        return cookieJar;
-      })().finally(() => {
-        loginPromise = null;
+/** Ленивый логин: один раз (и после 401), дальше переиспользуем jar */
+async function ensureL1Login(): Promise<string> {
+  if (L1.cookieJar) return L1.cookieJar;
+  if (!L1.loginPromise) {
+    L1.loginPromise = (async () => {
+      const loginRes = await fetch(L1.origin + '/auth/password-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: 'basic', username: L1.username, password: L1.password }),
       });
-    }
-    return loginPromise;
+      if (!loginRes.ok) throw new Error(`L1 login failed: HTTP ${loginRes.status}`);
+      const setCookies = loginRes.headers.getSetCookie?.() ?? [];
+      L1.cookieJar = setCookies
+        .map((c) => c.split(';')[0])
+        .filter((c) => /^hermes_session_(at|rt|provider)=/.test(c))
+        .join('; ');
+      if (!L1.cookieJar) throw new Error('L1 login succeeded but no session cookies');
+      return L1.cookieJar;
+    })().finally(() => {
+      L1.loginPromise = null;
+    });
   }
+  return L1.loginPromise;
+}
+
+function l1ProxyPlugin(): Plugin {
 
   return {
     name: 'hermes-plus-l1-bff',
@@ -132,6 +148,46 @@ function l1ProxyPlugin(): Plugin {
       server.middlewares.use('/l1', async (req, res, next) => {
         try {
           const targetUrl = L1.origin + (req.url ?? '/');
+
+          // Сессионный токен L1 для WebSocket-подключений
+          if (req.url === '/api/auth/session-token') {
+            try {
+              const jar = await ensureL1Login().catch(() => L1.cookieJar);
+              const upstream = await fetch(L1.origin + '/', {
+                headers: jar ? { Cookie: jar } : {},
+              });
+              const html = await upstream.text();
+              const m = html.match(/SESSION_TOKEN__\s*=\s*"([^"]+)"/);
+              res.statusCode = 200;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ token: m ? m[1] : null }));
+            } catch (e) {
+              res.statusCode = 502;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ error: 'Failed to fetch L1 session token', details: e instanceof Error ? e.message : String(e) }));
+            }
+            return;
+          }
+
+          // WS ticket для cookie-auth агента (gated Hermes требует ticket на /api/ws)
+          if (req.url === '/api/auth/ws-ticket') {
+            try {
+              const jar = await ensureL1Login();
+              const upstream = await fetch(L1.origin + '/api/auth/ws-ticket', {
+                method: 'POST',
+                headers: { Cookie: jar, Accept: 'application/json' },
+              });
+              const text = await upstream.text();
+              res.statusCode = upstream.status;
+              res.setHeader('Content-Type', upstream.headers.get('content-type') ?? 'application/json');
+              res.end(text);
+            } catch (e) {
+              res.statusCode = 502;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ error: 'Failed to fetch L1 WS ticket', details: e instanceof Error ? e.message : String(e) }));
+            }
+            return;
+          }
 
           // Логин: проксируем на upstream (клиент может вызвать вручную)
           if (req.url?.startsWith('/auth/password-login')) {
@@ -145,7 +201,7 @@ function l1ProxyPlugin(): Plugin {
             const text = await loginRes.text();
             if (loginRes.ok) {
               const setCookies = loginRes.headers.getSetCookie?.() ?? [];
-              cookieJar = setCookies
+              L1.cookieJar = setCookies
                 .map((c) => c.split(';')[0])
                 .filter((c) => /^hermes_session_(at|rt|provider)=/.test(c))
                 .join('; ');
@@ -157,7 +213,7 @@ function l1ProxyPlugin(): Plugin {
           }
 
           // Остальные /l1/* — с lazy-login cookie jar
-          const jar = await ensureLogin().catch(() => cookieJar);
+          const jar = await ensureL1Login().catch(() => L1.cookieJar);
           const headers: Record<string, string> = { Accept: 'application/json' };
           if (jar) headers['Cookie'] = jar;
 
@@ -167,9 +223,9 @@ function l1ProxyPlugin(): Plugin {
             body: ['GET', 'HEAD'].includes(req.method ?? '') ? undefined : req,
           });
           // 401 → вероятно, сессия истекла: сбросить jar и один раз перелогиниться
-          if (upstream.status === 401 && cookieJar) {
-            cookieJar = '';
-            const fresh = await ensureLogin().catch(() => '');
+          if (upstream.status === 401 && L1.cookieJar) {
+            L1.cookieJar = '';
+            const fresh = await ensureL1Login().catch(() => '');
             const retry = await fetch(targetUrl, {
               method: req.method,
               headers: { ...headers, ...(fresh ? { Cookie: fresh } : {}) },
@@ -226,12 +282,19 @@ export default defineConfig(({ mode }) => {
           ws: true,
           changeOrigin: false,
         },
-        // Прокси для вебсокетов LAN агента
+        // Прокси для вебсокетов LAN агента (с пробросом auth-кук из BFF)
         '/l1/api/ws': {
           target: 'ws://192.168.1.221:9119',
           ws: true,
           changeOrigin: true,
           rewrite: (path) => path.replace(/^\/l1/, ''),
+          configure: (proxy) => {
+            proxy.on('proxyReqWs', (_proxyReq, _req) => {
+              if (L1.cookieJar) {
+                _proxyReq.setHeader('Cookie', L1.cookieJar);
+              }
+            });
+          },
         },
       },
     },

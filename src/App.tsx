@@ -60,7 +60,7 @@ export default function App() {
       {/* 2. Sessions Explorer */}
       {activeAgent && (
         <SessionList
-          key={activeAgent.id}
+          key={`sessions-${activeAgent.id}`}
           agent={activeAgent}
           selectedSessionId={selectedSessionId}
           onSelectSession={setSelectedSessionId}
@@ -72,7 +72,7 @@ export default function App() {
       {/* 3. Chat & Console */}
       {activeAgent && (
         <ChatConsole
-          key={`${activeAgent.id}-${selectedSessionId}`}
+          key={`chat-${activeAgent.id}`}
           agent={activeAgent}
           sessionId={selectedSessionId}
           onSessionCreated={setSelectedSessionId}

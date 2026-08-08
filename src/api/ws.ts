@@ -15,6 +15,7 @@ import { WsRequest, WsResponse, WsEvent } from '../types/ws';
 export interface WsClientOptions {
   baseUrl: string;
   token?: string;
+  ticket?: string;
   profile?: string;
   reconnectMs?: number;
   maxReconnects?: number;
@@ -23,6 +24,7 @@ export interface WsClientOptions {
 export class HermesWsClient {
   private baseUrl: string;
   private token?: string;
+  private ticket?: string;
   private profile?: string;
   private reconnectMs: number;
   private maxReconnects: number;
@@ -41,6 +43,7 @@ export class HermesWsClient {
   constructor(opts: WsClientOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/$/, '');
     this.token = opts.token;
+    this.ticket = opts.ticket;
     this.profile = opts.profile;
     this.reconnectMs = opts.reconnectMs ?? 2000;
     this.maxReconnects = opts.maxReconnects ?? 10;
@@ -48,7 +51,6 @@ export class HermesWsClient {
 
   /** ws://127.0.0.1:9119/api/ws?token=...&profile=... (или same-origin через прокси) */
   private wsUrl(): string {
-    // Поддержка относительного адреса или dev-proxy префикса
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.host;
     
@@ -56,7 +58,10 @@ export class HermesWsClient {
     if (this.baseUrl.startsWith('http')) {
       const u = new URL(this.baseUrl);
       const wsProto = u.protocol === 'https:' ? 'wss:' : 'ws:';
-      fullUrl = `${wsProto}//${u.host}/api/ws`;
+      // Сохраняем путь из baseUrl (напр. /l1 для proxyPath), чтобы
+      // WS-соединение шло через правильный dev-proxy префикс
+      const pathPrefix = u.pathname.replace(/\/$/, '');
+      fullUrl = `${wsProto}//${u.host}${pathPrefix}/api/ws`;
     } else if (this.baseUrl) {
       fullUrl = `${protocol}//${host}${this.baseUrl}/api/ws`;
     } else {
@@ -64,32 +69,45 @@ export class HermesWsClient {
     }
 
     const u = new URL(fullUrl);
-    if (this.token) u.searchParams.set('token', this.token);
+    if (this.ticket) u.searchParams.set('ticket', this.ticket);
+    else if (this.token) u.searchParams.set('token', this.token);
     if (this.profile) u.searchParams.set('profile', this.profile);
     return u.toString();
   }
 
   connect(): Promise<void> {
-    return new Promise((resolve) => {
-      const ws = new WebSocket(this.wsUrl());
+    return new Promise((resolve, reject) => {
+      const url = this.wsUrl();
+      const ws = new WebSocket(url);
       this.ws = ws;
 
+      let settled = false;
+
       ws.onopen = () => {
+        settled = true;
         this.reconnectCount = 0;
         this.onStatusChange(true);
         resolve();
       };
       ws.onmessage = (ev) => this.handleMessage(ev.data);
-      ws.onclose = () => {
+      ws.onclose = (ev) => {
         this.onStatusChange(false);
+        if (!settled) {
+          settled = true;
+          reject(new Error(`WS connection closed during handshake (code ${ev.code})`));
+        }
         if (!this.closedByUser && this.reconnectCount < this.maxReconnects) {
           this.reconnectCount++;
           setTimeout(() => this.connect(), this.reconnectMs);
         }
       };
       ws.onerror = () => {
-        this.onError(new Error('WS error'));
-        // onerror затем onclose — реконнект обработается там
+        const err = new Error('WS error');
+        this.onError(err);
+        if (!settled) {
+          settled = true;
+          reject(err);
+        }
       };
     });
   }
