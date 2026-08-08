@@ -11,6 +11,9 @@ dist-ssr/
 .env.local
 .env.*.local
 
+# Локальный реестр агентов (в git только example)
+agents-config.json
+
 # Logs
 logs/
 *.log
