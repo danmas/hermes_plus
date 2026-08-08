@@ -3,6 +3,7 @@ node_modules/
 
 # Build outputs
 dist/
+dist-server/
 dist-ssr/
 *.tsbuildinfo
 

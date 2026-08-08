@@ -33,6 +33,9 @@ let cachedLocalToken: string | null = null;
  * 2. Fallback: прямой запрос на 127.0.0.1:9119/ (если не через прокси).
  */
 async function fetchSessionToken(baseUrl: string): Promise<string | null> {
+  // В prod-сборке prod-BFF подставляет токен server-side
+  // (см. KB/README_SECURITY_PLANS.md) — браузеру токен не нужен и не отдаётся.
+  if (import.meta.env.PROD) return null;
   if (!baseUrl && cachedLocalToken) {
     return cachedLocalToken;
   }
@@ -141,8 +144,9 @@ export class HermesClient {
       this.cookies = await this.passwordLogin();
     }
     // Для proxyPath-агентов (BFF): получаем session-token через эндпоинт BFF
-    // чтобы WS-подключения могли аутентифицироваться на upstream Hermes
-    if (!this.token && this.proxyPath) {
+    // чтобы WS-подключения могли аутентифицироваться на upstream Hermes.
+    // В prod-BFF (PROD-сборка) auth полностью server-side — пропускаем.
+    if (!this.token && this.proxyPath && !import.meta.env.PROD) {
       try {
         const res = await fetch(`${this.proxyPath}/api/auth/session-token`);
         if (res.ok) {
@@ -161,9 +165,10 @@ export class HermesClient {
     return this.token;
   }
 
-  /** Получить одноразовый WS-тикет для cookie-auth target через BFF */
+  /** Получить одноразовый WS-тикет для cookie-auth target через BFF.
+   *  В prod-сборке тикет подставляет prod-BFF server-side — не запрашиваем. */
   async getWsTicket(): Promise<string | null> {
-    if (!this.proxyPath) return null;
+    if (!this.proxyPath || import.meta.env.PROD) return null;
     try {
       const res = await fetch(`${this.proxyPath}/api/auth/ws-ticket`, {
         method: 'POST',

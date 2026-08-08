@@ -105,3 +105,57 @@
 - Исправлен конфликт идентификаторов сессий (`session.seeded`): внутренний runtime session ID шлюза больше не перезаписывает постоянный SQLite ID сессии в `App.tsx` при открытии существующих сессий, устраняя ошибку `404 Not Found` на `/messages` и последующую ошибку `RPC 4007: session not found`.
 - Исправлено преждевременное размонтирование `ChatConsole` при генерации в новой сессии: стабильный `key={activeAgent.id}` в `App.tsx` предотвращает уничтожение компонента и обрыв WebSocket во время стриминга ответа.
 - Исправлена ошибка `403 Forbidden` при WebSocket-рукопожатии (`/api/ws`): добавлен dev-BFF роут `/api/auth/session-token` в `vite.config.ts`, метод `HermesClient.getToken()` с мьютексом `authPromise` и кэшированием токена, предотвращены лишние циклы реконнекта в `ws.ts`.
+
+## [0.2.1] - 2026-08-08
+
+### Добавлено
+
+- Новая секция KB: `KB/README_SECURITY_PLANS.md` — модель угроз, журнал решений
+  по транспорту (cloudflared ❌ → Tailscale Serve ✅ → проброс порта + логин BFF ✅,
+  т.к. есть домен carlinkmail.ru), финальная схема публикации в интернет
+  (BFF :8787, Let's Encrypt DNS-01, требования к авторизации), план работ.
+- `KB/README_INDEX.md`: раздел добавлен в оглавление.
+
+## [0.3.0] - 2026-08-08
+
+### Добавлено
+
+- **Prod-BFF (Hono + Node)** — каталог `server/`: единственный публичный
+  компонент для публикации UI в интернет (см. KB/README_SECURITY_PLANS.md):
+  - логин оператора по паролю (timingSafeEqual) → HttpOnly/SameSite=Lax кука
+    `hp_sid`; сессии in-memory (idle 12 ч / TTL 7 дней); rate-limit на логин
+    (5 неудач / 15 мин с IP → 429); встроенная страница `/login`;
+  - REST-прокси с server-side auth-injection: `/api/*` → локальный Hermes
+    (`X-Hermes-Session-Token` из env/SPA HTML, ретрай при 401), `/l1/*` →
+    LAN-агент (cookie jar, lazy-login, автоперелогин); секретные роуты
+    (`ws-ticket`, `password-login`) для браузера заблокированы;
+  - WS-мост `/api/ws`, `/l1/api/ws`: проверка куки на upgrade, upstream-токены
+    и single-use тикеты подставляет сервер, кадры JSON-RPC 1:1;
+  - `GET /api/agents` — sanitize-реестр (без секретов); статика `dist/` +
+    SPA-fallback — только после логина;
+  - секреты (session-token Hermes, креды l1) в браузер не попадают.
+- Конфигурация: `.env.example` (шаблон), `HERMES_PLUS_PASSWORD` обязателен
+  (≥ 24 символов), порт 8787.
+- Smoke-тесты (одноразовые, удалены после прогона): 14/14 PASS — auth,
+  REST-прокси обоих живых агентов, WS-мост local/l1.
+
+### Изменено
+
+- `src/api/client.ts`: в PROD-сборке клиент не запрашивает dev-эндпоинты
+  (`/api/auth/session-token`, `/l1/api/auth/ws-ticket`) — auth server-side.
+- `src/App.tsx`: auth-guard `GET /api/me` → 401 → редирект `/login`
+  (dev-режим не затронут).
+- `package.json`: `build` = UI + сервер (esbuild-бандл `dist-server/index.mjs`),
+  `start`, `typecheck:server`; зависимости: hono, @hono/node-server, ws.
+- `ecosystem.config.cjs`: PM2 поднимает prod-BFF вместо Vite dev.
+- KB: README_SECURITY_PLANS — секция «Реализация BFF», статусы плана работ.
+
+## [0.3.1] - 2026-08-08
+
+### Исправлено
+
+- Prod-BFF отдаёт `index.html` с заголовком `Cache-Control: no-cache, must-revalidate`
+  (явные роуты `/`, `/index.html` до `serveStatic`, чтение файла на каждый запрос).
+  Раньше закэшированный браузером `index.html` тянул старый бандл, который
+  запрашивал dev-эндпоинты `/l1/api/auth/session-token` и `/l1/api/auth/ws-ticket`
+  → 404 в консоли (в prod они заблокированы; auth полностью server-side).
