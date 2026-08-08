@@ -16,6 +16,7 @@
 | [README_SURVEY.md](README_SURVEY.md) | Обследование Hermes: карта API-эндпоинтов дашборда, auth (вкл. живой замер), WS-каналы | ✅ |
 | [README_WS_PROTOCOL.md](README_WS_PROTOCOL.md) | WS-протокол чата: JSON-RPC 2.0 на /api/ws, стрим-события, RPC-методы | ✅ |
 | [README_FLEET.md](README_FLEET.md) | Fleet-архитектура: несколько машин × профилей → один UI (BFF, registry, auth) | ✅ |
+| [README_SECURITY_PLANS.md](README_SECURITY_PLANS.md) | Безопасность и публикация в интернет: модель угроз, выбор транспорта (Tailscale/cloudflared → проброс порта + логин BFF + Let's Encrypt) | ✅ |
 
 ## Ключевые факты (TL;DR)
 

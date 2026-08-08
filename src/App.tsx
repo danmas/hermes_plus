@@ -8,6 +8,29 @@ import SessionList from './components/_SessionList';
 import ChatConsole from './components/_ChatConsole';
 
 export default function App() {
+  // Auth-guard для prod-BFF (см. KB/README_SECURITY_PLANS.md): без сессии
+  // /api/me → 401 → редирект на /login. В dev (Vite) /api/me не существует
+  // (404) — guard пропускает UI как раньше.
+  const [authReady, setAuthReady] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/me', { headers: { Accept: 'application/json' } })
+      .then((r) => {
+        if (cancelled) return;
+        if (r.status === 401) {
+          window.location.replace('/login');
+          return;
+        }
+        setAuthReady(true);
+      })
+      .catch(() => {
+        if (!cancelled) setAuthReady(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Реестр агентов: сначала синхронный fallback, затем async-загрузка из
   // agents-config.json (middleware /api/agents). Редактируйте JSON, не этот код.
   const [agents, setAgents] = useState<AgentTarget[]>(() => getAgentsSync());
@@ -37,6 +60,11 @@ export default function App() {
   const { data: fleetHealth, isLoading, refetch } = useFleet(agents, { withCounts: true });
 
   const activeAgent = agents.find((a) => a.id === selectedAgentId) ?? agents[0];
+
+  // До проверки авторизации UI не рендерим (иначе prod-BFF вернёт 401 на все запросы)
+  if (!authReady) {
+    return <div className="app-container" />;
+  }
 
   const handleSelectAgent = (id: string) => {
     setSelectedAgentId(id);
