@@ -62,11 +62,16 @@ export interface BffConfig {
   localOrigin: string;
   /** Origin LAN-агента l1. */
   l1Origin: string;
+  /** Origin LAN-агента .254 (рабочий комп). */
+  l254Origin: string;
   /** Стабильный SESSION_TOKEN (env), если задан — иначе парсинг SPA HTML. */
   sessionToken: string | null;
   /** Креды l1 (cookie-auth). */
   l1Username: string;
   l1Password: string;
+  /** Креды .254 (cookie-auth). */
+  l254Username: string;
+  l254Password: string;
   /** Каталог сборки фронтенда. */
   distDir: string;
 }
@@ -100,9 +105,12 @@ export function loadConfig(cwd: string): BffConfig {
     cookieSecure,
     localOrigin: get('HERMES_LOCAL_ORIGIN', 'http://127.0.0.1:9119').replace(/\/$/, ''),
     l1Origin: get('HERMES_L1_ORIGIN', 'http://192.168.1.221:9119').replace(/\/$/, ''),
+    l254Origin: get('HERMES_L254_ORIGIN', 'http://192.168.1.254:9119').replace(/\/$/, ''),
     sessionToken: get('HERMES_DASHBOARD_SESSION_TOKEN') || null,
     l1Username: get('HERMES_L1_USERNAME', get('VITE_HERMES_L1_USERNAME')),
     l1Password: get('HERMES_L1_PASSWORD', get('VITE_HERMES_L1_PASSWORD')),
+    l254Username: get('HERMES_L254_USERNAME', get('VITE_HERMES_L254_USERNAME')),
+    l254Password: get('HERMES_L254_PASSWORD', get('VITE_HERMES_L254_PASSWORD')),
     distDir: get('BFF_DIST_DIR', resolve(cwd, 'dist')),
   };
 }

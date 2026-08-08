@@ -40,12 +40,15 @@ import {
 } from './auth';
 import {
   ensureL1Login,
+  ensureL254Login,
   fetchL1WsTicket,
+  fetchL254WsTicket,
   getLocalToken,
   invalidateLocalToken,
   pickRequestHeaders,
   relayToUpstream,
   resetL1Jar,
+  resetL254Jar,
   toWsUrl,
   type UpstreamResponse,
 } from './upstream';
@@ -241,6 +244,49 @@ app.all('/l1/*', async (c) => {
   }
 });
 
+// ── REST-прокси: LAN-агент .254 (/l254/*) ────────────────────────────────────
+
+/** Пути .254, которые браузеру недоступны (секретные механики — только server-side). */
+const L254_DENY = new Set(['/api/auth/ws-ticket', '/auth/password-login', '/api/auth/session-token']);
+
+app.all('/l254/*', async (c) => {
+  const incoming = c.env.incoming;
+  const url = new URL(c.req.url);
+  const stripped = url.pathname.replace(/^\/l254/, '') || '/';
+  if (L254_DENY.has(stripped)) {
+    return c.json({ error: 'Not Found' }, 404);
+  }
+  const upstreamPath = stripped + url.search;
+  const method = incoming.method ?? 'GET';
+  const baseHeaders = pickRequestHeaders(incoming.headers);
+  const hasBody = method !== 'GET' && method !== 'HEAD';
+
+  const doRequest = async (jar: string) => {
+    return relayToUpstream({
+      origin: cfg.l254Origin,
+      path: upstreamPath,
+      method,
+      headers: { ...baseHeaders, ...(jar ? { cookie: jar } : {}) },
+      body: hasBody ? incoming : null,
+    });
+  };
+
+  try {
+    let jar = await ensureL254Login(cfg).catch(() => '');
+    const up = await doRequest(jar);
+    if (up.status === 401 && !hasBody) {
+      // сессия upstream истекла: сбросить jar, перелогиниться, повторить
+      resetL254Jar();
+      jar = await ensureL254Login(cfg).catch(() => '');
+      return toHonoResponse(await doRequest(jar));
+    }
+    return toHonoResponse(up);
+  } catch (e) {
+    console.warn(`[bff] l254 proxy error (${upstreamPath}):`, e instanceof Error ? e.message : String(e));
+    return c.json({ error: 'Bad Gateway', details: 'агент .254 недоступен' }, 502);
+  }
+});
+
 // ── Статика dist/ + SPA-fallback ──────────────────────────────────────────────
 
 // index.html читаем на каждый запрос (не кэшируем): после пересборки dist/
@@ -328,6 +374,31 @@ nodeServer.on('upgrade', (req, socket, head) => {
             };
           } catch (e) {
             console.warn('[bff:ws] l1 prepare failed:', e instanceof Error ? e.message : String(e));
+            return null;
+          }
+        },
+      });
+      return;
+    }
+
+    if (pathname === '/l254/api/ws') {
+      await handleUpgrade({
+        req,
+        socket,
+        head,
+        wss,
+        prepare: async (q) => {
+          try {
+            const jar = await ensureL254Login(cfg);
+            const ticket = await fetchL254WsTicket(cfg, jar);
+            if (!ticket) return null;
+            q.set('ticket', ticket);
+            return {
+              url: toWsUrl(cfg.l254Origin, '/api/ws', `?${q.toString()}`),
+              headers: { Cookie: jar },
+            };
+          } catch (e) {
+            console.warn('[bff:ws] l254 prepare failed:', e instanceof Error ? e.message : String(e));
             return null;
           }
         },
