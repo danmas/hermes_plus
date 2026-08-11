@@ -602,6 +602,428 @@ async function handleUpgrade(opts) {
   }
 }
 
+// server/agent-http.ts
+var AgentHttpError = class extends Error {
+  constructor(status, message, body) {
+    super(message);
+    this.status = status;
+    this.body = body;
+    this.name = "AgentHttpError";
+  }
+  status;
+  body;
+};
+function profileQs(agent, path) {
+  if (!agent.profile) return path;
+  const sep = path.includes("?") ? "&" : "?";
+  return `${path}${sep}profile=${encodeURIComponent(agent.profile)}`;
+}
+function errDetail(json, text, status) {
+  if (json && typeof json === "object") {
+    const o = json;
+    if (typeof o.detail === "string") return o.detail;
+    if (typeof o.error === "string") return o.error;
+  }
+  return text.slice(0, 200) || `HTTP ${status}`;
+}
+function createAgentHttp(cfg2, agent) {
+  const proxy = (agent.proxyPath || "").replace(/\/$/, "");
+  async function authHeaders() {
+    if (proxy === "/l1" || agent.id.startsWith("l1:")) {
+      const jar = await ensureL1Login(cfg2);
+      return {
+        origin: cfg2.l1Origin,
+        headers: { Accept: "application/json", Cookie: jar }
+      };
+    }
+    if (proxy === "/l254" || agent.id.startsWith("l254:")) {
+      const jar = await ensureL254Login(cfg2);
+      return {
+        origin: cfg2.l254Origin,
+        headers: { Accept: "application/json", Cookie: jar }
+      };
+    }
+    const origin = agent.baseUrl && /^https?:\/\//i.test(agent.baseUrl) ? agent.baseUrl.replace(/\/$/, "") : cfg2.localOrigin;
+    const token = await getLocalToken(cfg2);
+    const headers = { Accept: "application/json" };
+    if (token) headers["X-Hermes-Session-Token"] = token;
+    return { origin, headers };
+  }
+  async function request(method, path, body, retry = true) {
+    const { origin, headers } = await authHeaders();
+    const fullPath = path.startsWith("/") ? path : `/${path}`;
+    const h = { ...headers };
+    const init = { method, headers: h };
+    if (body !== void 0 && method !== "GET" && method !== "HEAD") {
+      h["Content-Type"] = "application/json";
+      init.body = JSON.stringify(body);
+    }
+    const res = await fetch(origin + fullPath, init);
+    const text = await res.text();
+    let json = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      json = null;
+    }
+    if (res.status === 401 && retry) {
+      if (proxy === "/l1" || agent.id.startsWith("l1:")) {
+        resetL1Jar();
+        return request(method, path, body, false);
+      }
+      if (proxy === "/l254" || agent.id.startsWith("l254:")) {
+        resetL254Jar();
+        return request(method, path, body, false);
+      }
+      invalidateLocalToken();
+      return request(method, path, body, false);
+    }
+    return { status: res.status, json, text };
+  }
+  return {
+    agent,
+    async getJson(path) {
+      const r = await request("GET", profileQs(agent, path));
+      if (r.status < 200 || r.status >= 300) {
+        throw new AgentHttpError(r.status, errDetail(r.json, r.text, r.status), r.json);
+      }
+      return r.json;
+    },
+    async postJson(path, body) {
+      const r = await request("POST", profileQs(agent, path), body);
+      if (r.status < 200 || r.status >= 300) {
+        throw new AgentHttpError(r.status, errDetail(r.json, r.text, r.status), r.json);
+      }
+      return r.json;
+    },
+    async deleteJson(path, body) {
+      const r = await request("DELETE", profileQs(agent, path), body);
+      if (r.status < 200 || r.status >= 300) {
+        throw new AgentHttpError(r.status, errDetail(r.json, r.text, r.status), r.json);
+      }
+      return r.json;
+    },
+    request: (method, path, body) => request(method, profileQs(agent, path), body)
+  };
+}
+
+// server/skill-package.ts
+var MAX_PACKAGE_BYTES = 5 * 1024 * 1024;
+var MAX_FILE_BYTES = 1 * 1024 * 1024;
+var MAX_FILES = 200;
+var DENY_BASENAMES = new Set(
+  [
+    ".env",
+    ".env.local",
+    ".env.production",
+    "id_rsa",
+    "id_ed25519",
+    "id_ecdsa",
+    "credentials.json",
+    "secrets.json",
+    ".npmrc",
+    ".netrc"
+  ].map((s) => s.toLowerCase())
+);
+var DENY_SUFFIXES = [".pem", ".key", ".p12", ".pfx"];
+function isDeniedBasename(name) {
+  const base = name.split(/[/\\]/).pop()?.toLowerCase() ?? "";
+  if (DENY_BASENAMES.has(base)) return true;
+  return DENY_SUFFIXES.some((s) => base.endsWith(s));
+}
+function normalizeRelPath(raw) {
+  let p = raw.replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!p || p.includes("\0")) return null;
+  if (p.startsWith("/") || /^[a-zA-Z]:/.test(p)) return null;
+  const parts = p.split("/").filter((x) => x && x !== ".");
+  if (parts.some((x) => x === "..")) return null;
+  return parts.join("/");
+}
+function validatePackage(pkg) {
+  if (!pkg || typeof pkg !== "object") return { ok: false, error: "package must be an object" };
+  const o = pkg;
+  if (o.version !== 1) return { ok: false, error: "unsupported package version" };
+  if (typeof o.name !== "string" || !o.name.trim()) return { ok: false, error: "package.name required" };
+  if (!Array.isArray(o.files) || o.files.length === 0) return { ok: false, error: "package.files empty" };
+  if (o.files.length > MAX_FILES) return { ok: false, error: `too many files (>${MAX_FILES})` };
+  const files = [];
+  let total = 0;
+  let hasSkillMd = false;
+  for (const f of o.files) {
+    if (!f || typeof f !== "object") return { ok: false, error: "invalid file entry" };
+    const fe = f;
+    const rel = typeof fe.relativePath === "string" ? normalizeRelPath(fe.relativePath) : null;
+    if (!rel) return { ok: false, error: `unsafe relativePath: ${String(fe.relativePath)}` };
+    if (isDeniedBasename(rel)) return { ok: false, error: `denied file: ${rel}` };
+    const encoding = fe.encoding === "base64" ? "base64" : "utf-8";
+    if (typeof fe.content !== "string") return { ok: false, error: `missing content: ${rel}` };
+    const byteLen = encoding === "base64" ? Math.floor(fe.content.length * 3 / 4) : Buffer.byteLength(fe.content, "utf8");
+    if (byteLen > MAX_FILE_BYTES) return { ok: false, error: `file too large: ${rel}` };
+    total += byteLen;
+    if (total > MAX_PACKAGE_BYTES) return { ok: false, error: "package too large" };
+    if (rel === "SKILL.md" || rel.toLowerCase() === "skill.md") hasSkillMd = true;
+    files.push({ relativePath: rel, content: fe.content, encoding });
+  }
+  if (!hasSkillMd) return { ok: false, error: "SKILL.md required in package" };
+  const source = o.source && typeof o.source === "object" ? o.source : { agentId: "unknown" };
+  return {
+    ok: true,
+    package: {
+      version: 1,
+      name: String(o.name).trim(),
+      category: typeof o.category === "string" ? o.category : void 0,
+      source: {
+        agentId: typeof source.agentId === "string" ? source.agentId : "unknown",
+        profile: typeof source.profile === "string" ? source.profile : void 0
+      },
+      files,
+      meta: o.meta && typeof o.meta === "object" ? o.meta : { exportedAt: (/* @__PURE__ */ new Date()).toISOString(), fileCount: files.length, totalBytes: total }
+    }
+  };
+}
+function joinSkillPath(root, rel) {
+  const r = root.replace(/[/\\]+$/, "");
+  const sep = r.includes("\\") ? "\\" : "/";
+  return r + sep + rel.replace(/\//g, sep);
+}
+function toPosixRel(fromRoot, absPath) {
+  const a = fromRoot.replace(/\\/g, "/").replace(/\/+$/, "");
+  const b = absPath.replace(/\\/g, "/");
+  if (b === a) return "";
+  const prefix = a.endsWith("/") ? a : a + "/";
+  if (!b.startsWith(prefix) && b.toLowerCase() !== a.toLowerCase()) {
+    if (!b.toLowerCase().startsWith(prefix.toLowerCase())) return null;
+    return b.slice(prefix.length);
+  }
+  return b.slice(prefix.length);
+}
+
+// server/skill-transfer.ts
+var importLocks = /* @__PURE__ */ new Set();
+function tryAcquireImportLock(targetAgentId, skillName) {
+  const k = `${targetAgentId}::${skillName}`;
+  if (importLocks.has(k)) return false;
+  importLocks.add(k);
+  return true;
+}
+function releaseImportLock(targetAgentId, skillName) {
+  importLocks.delete(`${targetAgentId}::${skillName}`);
+}
+async function listDir(http2, absPath) {
+  const q = `/api/fs/list?path=${encodeURIComponent(absPath)}`;
+  const data = await http2.getJson(q);
+  if (data.error && data.error !== "ENOENT") {
+    throw new Error(`fs/list ${absPath}: ${data.error}`);
+  }
+  return data.entries ?? [];
+}
+async function walkFiles(http2, absDir, acc = []) {
+  const entries = await listDir(http2, absDir);
+  for (const e of entries) {
+    if (e.isDirectory) {
+      if (e.name === "node_modules" || e.name === ".git") continue;
+      await walkFiles(http2, e.path, acc);
+    } else {
+      acc.push(e.path);
+    }
+  }
+  return acc;
+}
+async function exportSkillPackage(http2, skillName) {
+  const name = skillName.trim();
+  if (!name) throw new Error("skillName required");
+  const content = await http2.getJson(
+    `/api/skills/content?name=${encodeURIComponent(name)}`
+  );
+  if (!content?.path || !content.content) {
+    throw new Error(`skill content missing path for "${name}"`);
+  }
+  const skillMdPath = content.path;
+  const skillRoot = skillMdPath.replace(/[/\\]SKILL\.md$/i, "");
+  if (!skillRoot || skillRoot === skillMdPath) {
+    throw new Error(`cannot derive skill root from ${skillMdPath}`);
+  }
+  let category;
+  try {
+    const list = await http2.getJson("/api/skills");
+    const arr = Array.isArray(list) ? list : [];
+    const hit = arr.find((s) => s.name === name);
+    if (hit?.category) category = hit.category;
+  } catch {
+  }
+  const absFiles = await walkFiles(http2, skillRoot);
+  if (absFiles.length === 0) {
+    absFiles.push(skillMdPath);
+  }
+  if (absFiles.length > MAX_FILES) {
+    throw new Error(`too many files in skill (>${MAX_FILES})`);
+  }
+  const files = [];
+  let totalBytes = 0;
+  const skippedDenied = [];
+  for (const abs of absFiles) {
+    const relRaw = toPosixRel(skillRoot, abs);
+    if (relRaw === null) {
+      throw new Error(`file outside skill root: ${abs}`);
+    }
+    const rel = normalizeRelPath(relRaw || "SKILL.md");
+    if (!rel) throw new Error(`bad relative path for ${abs}`);
+    if (isDeniedBasename(rel)) {
+      skippedDenied.push(rel);
+      continue;
+    }
+    if (rel === "SKILL.md" || rel.toLowerCase() === "skill.md") {
+      const bytes2 = Buffer.byteLength(content.content, "utf8");
+      if (bytes2 > MAX_FILE_BYTES) throw new Error("SKILL.md too large");
+      totalBytes += bytes2;
+      if (totalBytes > MAX_PACKAGE_BYTES) throw new Error("package too large");
+      files.push({ relativePath: "SKILL.md", content: content.content, encoding: "utf-8" });
+      continue;
+    }
+    const read = await http2.getJson(
+      `/api/fs/read-text?path=${encodeURIComponent(abs)}`
+    );
+    if (read.binary) {
+      throw new Error(`binary file not supported in MVP: ${rel}`);
+    }
+    if (read.truncated) {
+      throw new Error(`file truncated by fs/read-text (too large): ${rel}`);
+    }
+    const text = read.text ?? "";
+    const bytes = Buffer.byteLength(text, "utf8");
+    if (bytes > MAX_FILE_BYTES) throw new Error(`file too large: ${rel}`);
+    totalBytes += bytes;
+    if (totalBytes > MAX_PACKAGE_BYTES) throw new Error("package too large");
+    files.push({ relativePath: rel, content: text, encoding: "utf-8" });
+  }
+  if (!files.some((f) => f.relativePath === "SKILL.md")) {
+    throw new Error("SKILL.md missing after export");
+  }
+  if (skippedDenied.length && files.length === 1 && absFiles.length > 1 + skippedDenied.length) {
+  }
+  if (skippedDenied.length) {
+    console.warn(`[skill-export] denied files skipped: ${skippedDenied.join(", ")}`);
+  }
+  const expected = absFiles.filter((abs) => {
+    const rel = toPosixRel(skillRoot, abs);
+    if (rel === null) return false;
+    const n = normalizeRelPath(rel || "SKILL.md");
+    return n && !isDeniedBasename(n);
+  }).length;
+  if (files.length < expected) {
+    throw new Error(`incomplete export: got ${files.length} files, expected ${expected}`);
+  }
+  return {
+    version: 1,
+    name,
+    category,
+    source: { agentId: http2.agent.id, profile: http2.agent.profile },
+    files,
+    meta: {
+      exportedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      fileCount: files.length,
+      totalBytes
+    }
+  };
+}
+async function ensureDir(http2, absDir) {
+  try {
+    await http2.postJson("/api/files/mkdir", { path: absDir });
+  } catch (e) {
+    if (e instanceof AgentHttpError && (e.status === 409 || e.status === 400)) return;
+  }
+}
+async function writeTextFile(http2, absPath, text) {
+  await http2.postJson("/api/fs/write-text", { path: absPath, content: text });
+}
+async function cleanupSkillOnTarget(http2, skillName) {
+  try {
+    const content = await http2.getJson(
+      `/api/skills/content?name=${encodeURIComponent(skillName)}`
+    );
+    if (!content?.path) return false;
+    const skillRoot = content.path.replace(/[/\\]SKILL\.md$/i, "");
+    await http2.deleteJson("/api/files", { path: skillRoot, recursive: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function skillExists(http2, skillName) {
+  try {
+    await http2.getJson(`/api/skills/content?name=${encodeURIComponent(skillName)}`);
+    return true;
+  } catch (e) {
+    if (e instanceof AgentHttpError && e.status === 404) return false;
+    try {
+      const list = await http2.getJson("/api/skills");
+      return Array.isArray(list) && list.some((s) => s.name === skillName);
+    } catch {
+      throw e;
+    }
+  }
+}
+async function importSkillPackage(http2, pkg, nameOverride) {
+  const name = (nameOverride || pkg.name).trim();
+  if (!name) throw new Error("import name required");
+  if (await skillExists(http2, name)) {
+    throw new AgentHttpError(409, `skill already exists: ${name}`);
+  }
+  const skillMd = pkg.files.find(
+    (f) => f.relativePath === "SKILL.md" || f.relativePath.toLowerCase() === "skill.md"
+  );
+  if (!skillMd) throw new Error("package missing SKILL.md");
+  let created = false;
+  let skillRoot;
+  try {
+    await http2.postJson("/api/skills", {
+      name,
+      content: skillMd.content,
+      category: pkg.category ?? null,
+      profile: http2.agent.profile ?? null
+    });
+    created = true;
+    const content = await http2.getJson(
+      `/api/skills/content?name=${encodeURIComponent(name)}`
+    );
+    if (!content?.path) throw new Error("cannot resolve skill path after create");
+    skillRoot = content.path.replace(/[/\\]SKILL\.md$/i, "");
+    const rest = pkg.files.filter((f) => f.relativePath !== "SKILL.md" && f.relativePath.toLowerCase() !== "skill.md").slice().sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+    for (const f of rest) {
+      if (f.encoding === "base64") {
+        throw new Error(`binary/base64 not supported in MVP: ${f.relativePath}`);
+      }
+      const abs = joinSkillPath(skillRoot, f.relativePath);
+      const parent = abs.replace(/[/\\][^/\\]+$/, "");
+      if (parent && parent !== abs) {
+        await ensureDir(http2, parent);
+      }
+      await writeTextFile(http2, abs, f.content);
+    }
+    const onDisk = await walkFiles(http2, skillRoot);
+    const expected = pkg.files.length;
+    if (onDisk.length < expected) {
+      throw new Error(`post-verify failed: disk has ${onDisk.length} files, package ${expected}`);
+    }
+    return { name, fileCount: pkg.files.length, skillRoot };
+  } catch (e) {
+    let cleanedUp = false;
+    let cleanupFailed = false;
+    if (created) {
+      cleanedUp = await cleanupSkillOnTarget(http2, name);
+      cleanupFailed = !cleanedUp;
+    }
+    const msg = e instanceof Error ? e.message : String(e);
+    const err = new Error(msg);
+    err.cleanedUp = cleanedUp;
+    err.cleanupFailed = cleanupFailed;
+    throw err;
+  }
+}
+function findAgent(agents, agentId) {
+  return agents.find((a) => a.id === agentId);
+}
+
 // server/index.ts
 var CWD = process.cwd();
 var cfg;
@@ -681,6 +1103,75 @@ app.use("*", async (c, next) => {
 });
 app.get("/api/me", (c) => c.json({ ok: true, user: cfg.username }));
 app.get("/api/agents", (c) => c.json({ agents: registry.publicAgents }));
+app.post("/api/skills/export", async (c) => {
+  let body;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Bad request: JSON { agentId, skillName }" }, 400);
+  }
+  const agentId = String(body.agentId || "").trim();
+  const skillName = String(body.skillName || "").trim();
+  if (!agentId || !skillName) {
+    return c.json({ error: "agentId and skillName required" }, 400);
+  }
+  const agent = findAgent(registry.agents, agentId);
+  if (!agent) return c.json({ error: `unknown agentId: ${agentId}` }, 404);
+  try {
+    const http2 = createAgentHttp(cfg, agent);
+    const pkg = await exportSkillPackage(http2, skillName);
+    console.log(
+      `[bff] skill export ok agent=${agentId} skill=${skillName} files=${pkg.files.length} user=${cfg.username}`
+    );
+    return c.json({ ok: true, package: pkg });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const status = e instanceof AgentHttpError ? e.status : 500;
+    console.warn(`[bff] skill export fail agent=${agentId} skill=${skillName}:`, msg);
+    const code = status >= 400 && status < 600 ? status : 500;
+    return c.json({ error: msg }, code);
+  }
+});
+app.post("/api/skills/import", async (c) => {
+  let body;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Bad request: JSON { agentId, package, nameOverride? }" }, 400);
+  }
+  const agentId = String(body.agentId || "").trim();
+  if (!agentId) return c.json({ error: "agentId required" }, 400);
+  const agent = findAgent(registry.agents, agentId);
+  if (!agent) return c.json({ error: `unknown agentId: ${agentId}` }, 404);
+  const checked = validatePackage(body.package);
+  if (!checked.ok) return c.json({ error: checked.error }, 400);
+  const pkg = checked.package;
+  const name = String(body.nameOverride || pkg.name).trim();
+  if (!tryAcquireImportLock(agentId, name)) {
+    return c.json({ error: "import already in progress for this skill on target" }, 409);
+  }
+  try {
+    const http2 = createAgentHttp(cfg, agent);
+    const result = await importSkillPackage(http2, pkg, name);
+    console.log(
+      `[bff] skill import ok agent=${agentId} skill=${result.name} files=${result.fileCount} user=${cfg.username}`
+    );
+    return c.json({ ok: true, ...result });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const cleanedUp = Boolean(e.cleanedUp);
+    const cleanupFailed = Boolean(e.cleanupFailed);
+    const status = e instanceof AgentHttpError ? e.status : msg.includes("already exists") ? 409 : 500;
+    console.warn(`[bff] skill import fail agent=${agentId} skill=${name}:`, msg, {
+      cleanedUp,
+      cleanupFailed
+    });
+    const code = status >= 400 && status < 600 ? status : 500;
+    return c.json({ error: msg, cleanedUp, cleanupFailed }, code);
+  } finally {
+    releaseImportLock(agentId, name);
+  }
+});
 function toHonoResponse(up) {
   return new Response(new Uint8Array(up.body), {
     status: up.status,

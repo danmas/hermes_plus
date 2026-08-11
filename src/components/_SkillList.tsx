@@ -8,6 +8,7 @@ import {
   searchFleetSkills,
   type FleetSkillHit,
 } from '../utils/_skillSearch';
+import { useSkillDragOptional } from './_SkillDragContext';
 import type { AgentHealth } from '../hooks/useFleet';
 import type { AgentTarget } from '../types/agent';
 import type { HermesSkill } from '../types/hermes';
@@ -46,22 +47,52 @@ function SkillRow({
   isActive,
   agentLabel,
   onSelect,
+  dragSource,
 }: {
   skill: HermesSkill;
   isActive: boolean;
   agentLabel?: string;
   onSelect: () => void;
+  dragSource?: { agentId: string; agentName: string; profile?: string };
 }) {
   const description =
     typeof skill.description === 'string' ? skill.description.trim() : '';
   const user = isUserSkill(skill);
   const prov = provenanceLabel(skill);
+  const drag = useSkillDragOptional();
+  const canDrag = user && !!dragSource && !!drag && !drag.busy;
 
   return (
     <div
-      className={`session-item skill-row ${user ? 'skill-row--user' : 'skill-row--stock'} ${isActive ? 'active' : ''}`}
+      className={`session-item skill-row ${user ? 'skill-row--user' : 'skill-row--stock'} ${isActive ? 'active' : ''} ${canDrag ? 'skill-row--draggable' : ''}`}
       onClick={onSelect}
-      title={description || skill.path || skill.name}
+      title={
+        canDrag
+          ? `${description || skill.name} · перетащите на другого агента для copy`
+          : description || skill.path || skill.name
+      }
+      draggable={canDrag}
+      onDragStart={(e) => {
+        if (!canDrag || !dragSource || !drag) return;
+        drag.setDragging({
+          agentId: dragSource.agentId,
+          agentName: dragSource.agentName,
+          skillName: skill.name,
+          profile: dragSource.profile,
+        });
+        e.dataTransfer.setData(
+          'application/x-hermes-skill',
+          JSON.stringify({
+            agentId: dragSource.agentId,
+            skillName: skill.name,
+          }),
+        );
+        e.dataTransfer.effectAllowed = 'copy';
+      }}
+      onDragEnd={() => {
+        drag?.setDragging(null);
+        drag?.setDropHoverAgentId(null);
+      }}
     >
       <div className="session-title">
         {agentLabel && <span className="agent-badge">{agentLabel}</span>}
@@ -195,6 +226,12 @@ export default function SkillList({
     onSelectSkill(hit.name);
   };
 
+  const dragSource = {
+    agentId: agent.id,
+    agentName: agent.name,
+    profile: agent.profile,
+  };
+
   if (isCollapsed) {
     return (
       <div className={`pane collapsed`} style={{ width: 50, minWidth: 50 }}>
@@ -315,6 +352,11 @@ export default function SkillList({
                         isActive={hit.agentId === agent.id && selectedSkillName === hit.name}
                         agentLabel={hit.agentName}
                         onSelect={() => openFleetHit(hit)}
+                        dragSource={{
+                          agentId: hit.agentId,
+                          agentName: hit.agentName,
+                          profile: hit.profile,
+                        }}
                       />
                     ))}
                   </>
@@ -366,6 +408,7 @@ export default function SkillList({
                     skill={s}
                     isActive={selectedSkillName === s.name}
                     onSelect={() => openSkill(s.name)}
+                    dragSource={dragSource}
                   />
                 ))}
               </>

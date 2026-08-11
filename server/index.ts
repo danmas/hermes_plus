@@ -53,6 +53,15 @@ import {
   type UpstreamResponse,
 } from './upstream';
 import { handleUpgrade } from './wsproxy';
+import { createAgentHttp, AgentHttpError } from './agent-http';
+import { validatePackage } from './skill-package';
+import {
+  exportSkillPackage,
+  findAgent,
+  importSkillPackage,
+  releaseImportLock,
+  tryAcquireImportLock,
+} from './skill-transfer';
 
 // ── Инициализация ─────────────────────────────────────────────────────────────
 
@@ -156,6 +165,87 @@ app.get('/api/me', (c) => c.json({ ok: true, user: cfg.username }));
 
 /** Реестр агентов БЕЗ секретов (sanitize в server/config.ts). */
 app.get('/api/agents', (c) => c.json({ agents: registry.publicAgents }));
+
+// ── Skill copy export/import (ДО catch-all /api/* proxy) ─────────────────────
+// openspec skills-copy-dnd: BFF собирает SkillPackage через /api/fs/* + create.
+
+app.post('/api/skills/export', async (c) => {
+  let body: { agentId?: string; skillName?: string };
+  try {
+    body = (await c.req.json()) as { agentId?: string; skillName?: string };
+  } catch {
+    return c.json({ error: 'Bad request: JSON { agentId, skillName }' }, 400);
+  }
+  const agentId = String(body.agentId || '').trim();
+  const skillName = String(body.skillName || '').trim();
+  if (!agentId || !skillName) {
+    return c.json({ error: 'agentId and skillName required' }, 400);
+  }
+  const agent = findAgent(registry.agents, agentId);
+  if (!agent) return c.json({ error: `unknown agentId: ${agentId}` }, 404);
+  try {
+    const http = createAgentHttp(cfg, agent);
+    const pkg = await exportSkillPackage(http, skillName);
+    console.log(
+      `[bff] skill export ok agent=${agentId} skill=${skillName} files=${pkg.files.length} user=${cfg.username}`,
+    );
+    return c.json({ ok: true, package: pkg });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const status = e instanceof AgentHttpError ? e.status : 500;
+    console.warn(`[bff] skill export fail agent=${agentId} skill=${skillName}:`, msg);
+    const code = (status >= 400 && status < 600 ? status : 500) as 400 | 404 | 409 | 500 | 502;
+    return c.json({ error: msg }, code);
+  }
+});
+
+app.post('/api/skills/import', async (c) => {
+  let body: { agentId?: string; package?: unknown; nameOverride?: string };
+  try {
+    body = (await c.req.json()) as {
+      agentId?: string;
+      package?: unknown;
+      nameOverride?: string;
+    };
+  } catch {
+    return c.json({ error: 'Bad request: JSON { agentId, package, nameOverride? }' }, 400);
+  }
+  const agentId = String(body.agentId || '').trim();
+  if (!agentId) return c.json({ error: 'agentId required' }, 400);
+  const agent = findAgent(registry.agents, agentId);
+  if (!agent) return c.json({ error: `unknown agentId: ${agentId}` }, 404);
+
+  const checked = validatePackage(body.package);
+  if (!checked.ok) return c.json({ error: checked.error }, 400);
+  const pkg = checked.package;
+  const name = String(body.nameOverride || pkg.name).trim();
+
+  if (!tryAcquireImportLock(agentId, name)) {
+    return c.json({ error: 'import already in progress for this skill on target' }, 409);
+  }
+  try {
+    const http = createAgentHttp(cfg, agent);
+    const result = await importSkillPackage(http, pkg, name);
+    console.log(
+      `[bff] skill import ok agent=${agentId} skill=${result.name} files=${result.fileCount} user=${cfg.username}`,
+    );
+    return c.json({ ok: true, ...result });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const cleanedUp = Boolean((e as { cleanedUp?: boolean }).cleanedUp);
+    const cleanupFailed = Boolean((e as { cleanupFailed?: boolean }).cleanupFailed);
+    const status =
+      e instanceof AgentHttpError ? e.status : msg.includes('already exists') ? 409 : 500;
+    console.warn(`[bff] skill import fail agent=${agentId} skill=${name}:`, msg, {
+      cleanedUp,
+      cleanupFailed,
+    });
+    const code = (status >= 400 && status < 600 ? status : 500) as 400 | 404 | 409 | 500 | 502;
+    return c.json({ error: msg, cleanedUp, cleanupFailed }, code);
+  } finally {
+    releaseImportLock(agentId, name);
+  }
+});
 
 /** Собрать ответ из буферизованного upstream-ответа. */
 function toHonoResponse(up: UpstreamResponse): Response {

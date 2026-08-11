@@ -151,13 +151,28 @@ GET    /api/profiles/sessions/sidebar
 
 ### Skills (skills browser)
 ```
-GET    /api/skills                       список
-GET    /api/skills/content?...           тело SKILL.md
-POST   /api/skills                       создать
-PUT    /api/skills/content               редактировать
+GET    /api/skills                       список (массив; + enabled/usage/provenance на 0.20.x)
+GET    /api/skills/content?name=         тело SKILL.md → { name, content, path }
+POST   /api/skills                       создать { name, content, category?, profile? }
+PUT    /api/skills/content               редактировать SKILL.md
 PUT    /api/skills/toggle                вкл/выкл
 ```
 (+ `hub_router` для skill-hub в `web_routers/skills.py`)
+
+**Full-file copy (openspec `skills-copy-dnd`, 2026-08-11):**  
+skills REST **не** отдаёт дерево файлов. Multi-file I/O — через Files/FS (ниже):
+export = skill root (parent of `content.path`) → recursive `GET /api/fs/list` +
+`read-text` / `read-data-url`; import = `POST /api/skills` + `files/mkdir` +
+`POST /api/fs/write-text` (parent dir must exist).  
+Сигнатуры fs (из `web_server.py`):
+- `GET /api/fs/list?path=` → `{ entries: [{ name, path, isDirectory }] }` (path required)
+- `GET /api/fs/read-text?path=` → `{ text, binary, truncated, byteSize, path, … }`;
+  preview cap **512 KiB** (`truncated: true` если больше); source max 64 MiB
+- `POST /api/fs/write-text` body `{ path, content }` → `{ ok, path, byteSize }`;
+  write max **8 MiB**; parent directory must already exist
+- `GET /api/fs/read-data-url?path=` — binary-ish payload as data URL  
+Live auth: без cookie/token → **401** (проверено 2026-08-11). Полный end-to-end
+export/import на живом token — phase 0 tasks 0.2–0.8.
 
 ### Config / Env / Model
 ```

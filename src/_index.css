@@ -761,4 +761,101 @@ mark {
   opacity: 0.92;
 }
 
+.skill-row--draggable {
+  cursor: grab;
+}
+
+.skill-row--draggable:active {
+  cursor: grabbing;
+  opacity: 0.85;
+}
+
+.skill-drop-hint {
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px dashed rgba(245, 158, 11, 0.45);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  line-height: 1.4;
+}
+
+.skill-drop-hint-name {
+  margin-top: 4px;
+  color: #fbbf24;
+  font-weight: 600;
+}
+
+.agent-card--droppable {
+  outline: 1px dashed rgba(14, 165, 233, 0.35);
+}
+
+.agent-card--drop {
+  outline: 2px solid var(--accent);
+  box-shadow: 0 0 16px var(--accent-glow);
+  background: rgba(14, 165, 233, 0.08);
+}
+
+.skill-copy-toast {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 1000;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.skill-copy-toast--exporting,
+.skill-copy-toast--importing {
+  border-color: rgba(14, 165, 233, 0.5);
+}
+
+.skill-copy-toast--done {
+  border-color: rgba(16, 185, 129, 0.55);
+}
+
+.skill-copy-toast--error {
+  border-color: rgba(239, 68, 68, 0.55);
+}
+
+.skill-copy-toast-body {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.skill-copy-toast-close {
+  margin-left: auto;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.skill-copy-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(14, 165, 233, 0.25);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: skill-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes skill-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 

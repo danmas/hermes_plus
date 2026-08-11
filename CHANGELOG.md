@@ -20,6 +20,9 @@
   Skill | Agent | Fleet (client-side filter + fleet fan-out).
 - `HermesClient.getSkillContent`, normalize envelope в `getSkills`;
   утилиты `src/utils/_skillSearch.ts`; UI `_SkillList`, `_SkillViewer`.
+- **Skill copy DnD** (openspec `skills-copy-dnd`): BFF `POST /api/skills/export|import`
+  (пакет через `/api/fs/*` + create), create-only + rename, cleanup rollback;
+  drag user-skill → drop на fleet-карточку (`SkillDragProvider`).
 
 ### Изменено
 
