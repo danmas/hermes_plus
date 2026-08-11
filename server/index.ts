@@ -107,23 +107,28 @@ app.post('/auth/login', async (c) => {
   if (blocked > 0) {
     return c.json({ error: 'Too many attempts', retry_after: blocked }, 429);
   }
+  let username: unknown;
   let password: unknown;
   try {
-    const body = (await c.req.json()) as { password?: unknown };
+    const body = (await c.req.json()) as { username?: unknown; password?: unknown };
+    username = body.username;
     password = body.password;
   } catch {
-    return c.json({ error: 'Bad request: expected JSON {password}' }, 400);
+    return c.json({ error: 'Bad request: expected JSON {username, password}' }, 400);
   }
-  if (typeof password !== 'string' || !verifyPassword(password, cfg.password)) {
+  // Оба поля проверяем всегда (timing-safe), ответ единый — не светим, что именно неверно.
+  const userOk = typeof username === 'string' && verifyPassword(username, cfg.username);
+  const passOk = typeof password === 'string' && verifyPassword(password, cfg.password);
+  if (!userOk || !passOk) {
     recordLoginFail(ip);
     console.warn(`[bff] неудачный логин с ${ip}`);
-    return c.json({ error: 'Invalid password' }, 401);
+    return c.json({ error: 'Invalid credentials' }, 401);
   }
   clearLoginFails(ip);
   const sid = createSession(ip);
   c.header('Set-Cookie', sessionSetCookie(sid, isSecureRequest(c)));
-  console.log(`[bff] логин ok (${ip})`);
-  return c.json({ ok: true });
+  console.log(`[bff] логин ok user=${cfg.username} (${ip})`);
+  return c.json({ ok: true, user: cfg.username });
 });
 
 app.post('/auth/logout', (c) => {
@@ -147,7 +152,7 @@ app.use('*', async (c, next) => {
 
 // ── Служебные эндпоинты BFF ───────────────────────────────────────────────────
 
-app.get('/api/me', (c) => c.json({ ok: true, user: 'operator' }));
+app.get('/api/me', (c) => c.json({ ok: true, user: cfg.username }));
 
 /** Реестр агентов БЕЗ секретов (sanitize в server/config.ts). */
 app.get('/api/agents', (c) => c.json({ agents: registry.publicAgents }));

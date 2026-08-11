@@ -544,3 +544,221 @@ mark {
   border: 1px solid rgba(245, 158, 11, 0.5);
 }
 
+/* ── Middle: Sessions | Skills (openspec skills-browser-search) ── */
+.middle-stack {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-width: 0;
+  border-right: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+}
+
+.middle-stack .pane {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+  border-right: none;
+}
+
+.middle-mode-switch {
+  display: flex;
+  gap: 0;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-tertiary);
+}
+
+.middle-mode-btn {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 10px 8px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all var(--transition-fast);
+}
+
+.middle-mode-btn:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.middle-mode-btn.active {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent);
+  background: var(--accent-glow);
+}
+
+.skill-disabled-badge {
+  display: inline-block;
+  font-size: 9px;
+  text-transform: uppercase;
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #f87171;
+  border-radius: 3px;
+  padding: 0 4px;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.skill-profile-tag {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.skill-viewer-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-width: 0;
+}
+
+.skill-viewer-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.skill-content-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: ui-monospace, Consolas, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 2px 6px;
+  border-bottom: 1px dashed var(--border-color);
+}
+
+.skill-content-pre {
+  flex: 1;
+  margin: 0;
+  padding: 12px 14px;
+  background: #05070c;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-family: ui-monospace, Consolas, 'Courier New', monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: auto;
+  min-height: 200px;
+}
+
+.skill-content-mark {
+  background: rgba(245, 158, 11, 0.45);
+  color: var(--text-primary);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+/* description skill в списке (из frontmatter SKILL.md / API) */
+.skill-description {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  margin: 4px 0 2px;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+  white-space: normal;
+}
+
+.skill-description-empty {
+  font-style: italic;
+  opacity: 0.75;
+}
+
+/* ── User vs stock skills ── */
+.skill-section-hdr {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 10px 6px 6px;
+  margin-top: 4px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-color);
+  position: sticky;
+  top: 0;
+  background: var(--bg-secondary);
+  z-index: 1;
+}
+
+.skill-section-hdr--user {
+  color: #fbbf24;
+  border-bottom-color: rgba(245, 158, 11, 0.35);
+}
+
+.skill-section-hdr--stock {
+  color: var(--text-muted);
+  margin-top: 12px;
+}
+
+.skill-section-count {
+  font-weight: 500;
+  font-size: 10px;
+  opacity: 0.85;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 6px;
+  border-radius: 8px;
+}
+
+.skill-origin-badge {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  border-radius: 3px;
+  padding: 0 5px;
+  margin-right: 6px;
+  vertical-align: middle;
+  letter-spacing: 0.03em;
+}
+
+.skill-origin-badge--user {
+  background: rgba(245, 158, 11, 0.18);
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  color: #fbbf24;
+}
+
+.skill-origin-badge--stock {
+  background: rgba(148, 163, 184, 0.12);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  color: var(--text-secondary);
+}
+
+.skill-row--user {
+  border-left: 3px solid rgba(245, 158, 11, 0.75);
+  background: rgba(245, 158, 11, 0.04);
+}
+
+.skill-row--user:hover {
+  background: rgba(245, 158, 11, 0.09);
+}
+
+.skill-row--user.active {
+  border-left-color: #f59e0b;
+  background: rgba(245, 158, 11, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.25);
+}
+
+.skill-row--stock {
+  border-left: 3px solid transparent;
+  opacity: 0.92;
+}
+
+

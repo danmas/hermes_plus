@@ -54,6 +54,11 @@ export function mergedEnv(cwd: string): EnvSource {
 export interface BffConfig {
   /** Порт BFF (по умолчанию 8787; 3000–3002 заняты Kosmos Panel). */
   port: number;
+  /**
+   * Логин единственного оператора (для browser password manager).
+   * Не секрет; задаётся рядом с паролем в .env.local.
+   */
+  username: string;
   /** Пароль единственного оператора. Обязателен — без него BFF не стартует. */
   password: string;
   /** Secure-флаг куки: auto = по x-forwarded-proto; 1/0 = принудительно. */
@@ -80,6 +85,13 @@ export function loadConfig(cwd: string): BffConfig {
   const env = mergedEnv(cwd);
   const get = (k: string, dflt = ''): string => env[k] ?? dflt;
 
+  const username = get('HERMES_PLUS_USERNAME', 'operator').trim();
+  if (!username) {
+    throw new Error(
+      'HERMES_PLUS_USERNAME пуст. Задайте логин оператора в .env.local рядом с HERMES_PLUS_PASSWORD (например operator).',
+    );
+  }
+
   const password = get('HERMES_PLUS_PASSWORD');
   if (!password) {
     throw new Error(
@@ -101,6 +113,7 @@ export function loadConfig(cwd: string): BffConfig {
 
   return {
     port: Number(get('PORT', get('BFF_PORT', '8787'))),
+    username,
     password,
     cookieSecure,
     localOrigin: get('HERMES_LOCAL_ORIGIN', 'http://127.0.0.1:9119').replace(/\/$/, ''),

@@ -57,13 +57,35 @@ export interface HermesSessionMessage {
   [k: string]: unknown;
 }
 
+/**
+ * Элемент `GET /api/skills` (Hermes web_routers/skills.py).
+ * Live shape: name + enabled/usage/provenance; description/path/category — когда есть.
+ */
 export interface HermesSkill {
   name: string;
   description?: string;
   path?: string;
   enabled?: boolean;
   category?: string;
+  /**
+   * hub | bundled | agent
+   * agent = пользовательские / hand-made (web_routers/skills.py)
+   */
+  provenance?: string;
+  usage?: number;
+  /** если Hermes/прокси добавит mtime — используем для сортировки user-skills */
+  mtime?: number | string;
+  modified_at?: number | string;
+  updated_at?: number | string;
+  created_at?: number | string;
   [k: string]: unknown;
+}
+
+/** `GET /api/skills/content?name=` → { name, content, path } */
+export interface HermesSkillContent {
+  name: string;
+  content: string;
+  path?: string;
 }
 
 export interface SessionsListResponse {

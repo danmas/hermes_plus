@@ -2,10 +2,11 @@
  * server/auth — авторизация оператора prod-BFF.
  *
  * Один пользователь (владелец). Механика (KB/README_SECURITY_PLANS.md):
- * - POST /auth/login { password } → HttpOnly/Secure/SameSite=Lax кука `hp_sid`;
+ * - POST /auth/login { username, password } → HttpOnly/Secure/SameSite=Lax кука `hp_sid`;
+ * - логин + пароль из .env.local (HERMES_PLUS_USERNAME / HERMES_PLUS_PASSWORD);
  * - сессии в памяти (idle 12 ч, абсолютный TTL 7 дней);
  * - rate-limit на логин: ≤ 5 неудач с IP за 15 минут, дальше 429;
- * - сравнение пароля — timingSafeEqual по SHA-256 (без сторонних зависимостей).
+ * - сравнение секретов — timingSafeEqual по SHA-256 (без сторонних зависимостей).
  *
  * Куки НЕ Secure при прямом http (dev/LAN); за reverse-proxy с TLS
  * выставляется x-forwarded-proto: https → Secure включается (COOKIE_SECURE=auto).
@@ -93,11 +94,16 @@ export function clearLoginFails(ip: string): void {
 
 // ── Пароль / куки ─────────────────────────────────────────────────────────────
 
-/** Сравнение пароля без timing-атак (SHA-256 + timingSafeEqual). */
-export function verifyPassword(input: string, expected: string): boolean {
+/** Сравнение строки без timing-атак (SHA-256 + timingSafeEqual). */
+export function verifySecret(input: string, expected: string): boolean {
   const a = createHash('sha256').update(String(input)).digest();
   const b = createHash('sha256').update(String(expected)).digest();
   return timingSafeEqual(a, b);
+}
+
+/** @deprecated используйте verifySecret — оставлено для совместимости. */
+export function verifyPassword(input: string, expected: string): boolean {
+  return verifySecret(input, expected);
 }
 
 export function parseCookies(header: string | undefined): Record<string, string> {
@@ -146,14 +152,17 @@ export const LOGIN_HTML = `<!doctype html>
   }
   h1 { margin: 0 0 4px; font-size: 18px; }
   .sub { margin: 0 0 20px; font-size: 12px; color: #7d8ca0; }
-  label { display: block; margin-bottom: 6px; font-size: 12px; color: #9fb0c3; }
+  label { display: block; margin: 0 0 6px; font-size: 12px; color: #9fb0c3; }
+  .field { margin-bottom: 12px; }
+  input[type=text],
   input[type=password] {
     width: 100%; padding: 10px 12px; border-radius: 8px;
     border: 1px solid #2a3a4e; background: #0d131b; color: #e6edf5; outline: none;
   }
+  input[type=text]:focus,
   input[type=password]:focus { border-color: #2dd4bf; }
   button {
-    margin-top: 16px; width: 100%; padding: 10px 12px; border: 0; border-radius: 8px;
+    margin-top: 8px; width: 100%; padding: 10px 12px; border: 0; border-radius: 8px;
     background: #14b8a6; color: #04211d; font-weight: 600; cursor: pointer;
   }
   button:hover { background: #2dd4bf; }
@@ -162,11 +171,18 @@ export const LOGIN_HTML = `<!doctype html>
 </style>
 </head>
 <body>
-  <form class="card" id="f">
+  <form class="card" id="f" method="post" action="/auth/login" autocomplete="on">
     <h1>hermes_plus</h1>
     <p class="sub">Fleet Control Plane — доступ только для оператора</p>
-    <label for="p">Пароль</label>
-    <input id="p" name="password" type="password" autocomplete="current-password" autofocus required>
+    <div class="field">
+      <label for="u">Логин</label>
+      <input id="u" name="username" type="text" autocomplete="username"
+             autocapitalize="off" spellcheck="false" autofocus required>
+    </div>
+    <div class="field">
+      <label for="p">Пароль</label>
+      <input id="p" name="password" type="password" autocomplete="current-password" required>
+    </div>
     <button type="submit" id="b">Войти</button>
     <div class="err" id="e"></div>
   </form>
@@ -175,20 +191,21 @@ export const LOGIN_HTML = `<!doctype html>
     ev.preventDefault();
     const btn = document.getElementById('b');
     const err = document.getElementById('e');
+    const username = document.getElementById('u').value;
     const password = document.getElementById('p').value;
     btn.disabled = true; err.textContent = '';
     try {
       const res = await fetch('/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({ username, password }),
       });
       if (res.ok) { location.replace('/'); return; }
       if (res.status === 429) {
         const d = await res.json().catch(() => ({}));
         err.textContent = 'Слишком много попыток. Повторите через ' + (d.retry_after || 60) + ' с.';
       } else {
-        err.textContent = 'Неверный пароль';
+        err.textContent = 'Неверный логин или пароль';
       }
     } catch {
       err.textContent = 'Сеть недоступна';

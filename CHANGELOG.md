@@ -7,6 +7,28 @@
 
 ---
 
+## [0.4.1] - 2026-08-11
+
+### Добавлено
+
+- Логин оператора BFF рядом с паролем: `HERMES_PLUS_USERNAME` в `.env.local` /
+  `.env.example` (default `operator`).
+- Поле **Логин** на `/login` с `autocomplete="username"` + пароль
+  `autocomplete="current-password"` — браузерные менеджеры паролей сохраняют пару.
+- **Skills browser** (openspec `skills-browser-search`): вкладка **Sessions | Skills**,
+  список `GET /api/skills`, просмотр `GET /api/skills/content?name=`, поиск
+  Skill | Agent | Fleet (client-side filter + fleet fan-out).
+- `HermesClient.getSkillContent`, normalize envelope в `getSkills`;
+  утилиты `src/utils/_skillSearch.ts`; UI `_SkillList`, `_SkillViewer`.
+
+### Изменено
+
+- `POST /auth/login` принимает `{ username, password }`; оба поля сверяются
+  timing-safe; единый ответ при ошибке: «Неверный логин или пароль».
+- `GET /api/me` возвращает `user` из `HERMES_PLUS_USERNAME`.
+
+---
+
 ## [0.1.0] - 2026-08-06
 
 ### Добавлено

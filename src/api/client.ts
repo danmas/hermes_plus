@@ -304,8 +304,39 @@ export class HermesClient {
     return this.request<import('../types/hermes').HermesStatus>('/api/status');
   }
 
-  getSkills() {
-    return this.request<import('../types/hermes').HermesSkill[]>('/api/skills');
+  /**
+   * Список skills профиля таргета — `GET /api/skills`.
+   * Hermes возвращает JSON-массив; envelope `{ skills: [] }` разворачиваем, если встретится.
+   */
+  async getSkills(opts?: { signal?: AbortSignal }): Promise<import('../types/hermes').HermesSkill[]> {
+    const raw = await this.request<unknown>('/api/skills', { signal: opts?.signal });
+    if (Array.isArray(raw)) {
+      return raw as import('../types/hermes').HermesSkill[];
+    }
+    if (raw && typeof raw === 'object') {
+      const o = raw as Record<string, unknown>;
+      if (Array.isArray(o.skills)) return o.skills as import('../types/hermes').HermesSkill[];
+      if (Array.isArray(o.items)) return o.items as import('../types/hermes').HermesSkill[];
+    }
+    throw new HermesApiError(0, 'getSkills: unexpected response shape');
+  }
+
+  /**
+   * Тело SKILL.md — `GET /api/skills/content?name=...` (+ profile через client).
+   * Ответ: `{ name, content, path }`.
+   */
+  async getSkillContent(
+    name: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<import('../types/hermes').HermesSkillContent> {
+    const n = (name || '').trim();
+    if (!n) throw new HermesApiError(0, 'getSkillContent: empty name');
+    const params = new URLSearchParams();
+    params.set('name', n);
+    return this.request<import('../types/hermes').HermesSkillContent>(
+      `/api/skills/content?${params.toString()}`,
+      { signal: opts?.signal },
+    );
   }
 
   /** Список сессий с пагинацией — envelope { sessions, total, limit, offset } */

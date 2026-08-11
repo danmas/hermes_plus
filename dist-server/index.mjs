@@ -89,6 +89,12 @@ function mergedEnv(cwd) {
 function loadConfig(cwd) {
   const env = mergedEnv(cwd);
   const get = (k, dflt = "") => env[k] ?? dflt;
+  const username = get("HERMES_PLUS_USERNAME", "operator").trim();
+  if (!username) {
+    throw new Error(
+      "HERMES_PLUS_USERNAME \u043F\u0443\u0441\u0442. \u0417\u0430\u0434\u0430\u0439\u0442\u0435 \u043B\u043E\u0433\u0438\u043D \u043E\u043F\u0435\u0440\u0430\u0442\u043E\u0440\u0430 \u0432 .env.local \u0440\u044F\u0434\u043E\u043C \u0441 HERMES_PLUS_PASSWORD (\u043D\u0430\u043F\u0440\u0438\u043C\u0435\u0440 operator)."
+    );
+  }
   const password = get("HERMES_PLUS_PASSWORD");
   if (!password) {
     throw new Error(
@@ -103,6 +109,7 @@ function loadConfig(cwd) {
   const cookieSecure = cookieSecureRaw === "1" || cookieSecureRaw === "true" ? "1" : cookieSecureRaw === "0" || cookieSecureRaw === "false" ? "0" : "auto";
   return {
     port: Number(get("PORT", get("BFF_PORT", "8787"))),
+    username,
     password,
     cookieSecure,
     localOrigin: get("HERMES_LOCAL_ORIGIN", "http://127.0.0.1:9119").replace(/\/$/, ""),
@@ -228,10 +235,13 @@ function recordLoginFail(ip) {
 function clearLoginFails(ip) {
   failLog.delete(ip);
 }
-function verifyPassword(input, expected) {
+function verifySecret(input, expected) {
   const a = createHash("sha256").update(String(input)).digest();
   const b = createHash("sha256").update(String(expected)).digest();
   return timingSafeEqual(a, b);
+}
+function verifyPassword(input, expected) {
+  return verifySecret(input, expected);
 }
 function parseCookies(header) {
   const out = {};
@@ -272,14 +282,17 @@ var LOGIN_HTML = `<!doctype html>
   }
   h1 { margin: 0 0 4px; font-size: 18px; }
   .sub { margin: 0 0 20px; font-size: 12px; color: #7d8ca0; }
-  label { display: block; margin-bottom: 6px; font-size: 12px; color: #9fb0c3; }
+  label { display: block; margin: 0 0 6px; font-size: 12px; color: #9fb0c3; }
+  .field { margin-bottom: 12px; }
+  input[type=text],
   input[type=password] {
     width: 100%; padding: 10px 12px; border-radius: 8px;
     border: 1px solid #2a3a4e; background: #0d131b; color: #e6edf5; outline: none;
   }
+  input[type=text]:focus,
   input[type=password]:focus { border-color: #2dd4bf; }
   button {
-    margin-top: 16px; width: 100%; padding: 10px 12px; border: 0; border-radius: 8px;
+    margin-top: 8px; width: 100%; padding: 10px 12px; border: 0; border-radius: 8px;
     background: #14b8a6; color: #04211d; font-weight: 600; cursor: pointer;
   }
   button:hover { background: #2dd4bf; }
@@ -288,11 +301,18 @@ var LOGIN_HTML = `<!doctype html>
 </style>
 </head>
 <body>
-  <form class="card" id="f">
+  <form class="card" id="f" method="post" action="/auth/login" autocomplete="on">
     <h1>hermes_plus</h1>
     <p class="sub">Fleet Control Plane \u2014 \u0434\u043E\u0441\u0442\u0443\u043F \u0442\u043E\u043B\u044C\u043A\u043E \u0434\u043B\u044F \u043E\u043F\u0435\u0440\u0430\u0442\u043E\u0440\u0430</p>
-    <label for="p">\u041F\u0430\u0440\u043E\u043B\u044C</label>
-    <input id="p" name="password" type="password" autocomplete="current-password" autofocus required>
+    <div class="field">
+      <label for="u">\u041B\u043E\u0433\u0438\u043D</label>
+      <input id="u" name="username" type="text" autocomplete="username"
+             autocapitalize="off" spellcheck="false" autofocus required>
+    </div>
+    <div class="field">
+      <label for="p">\u041F\u0430\u0440\u043E\u043B\u044C</label>
+      <input id="p" name="password" type="password" autocomplete="current-password" required>
+    </div>
     <button type="submit" id="b">\u0412\u043E\u0439\u0442\u0438</button>
     <div class="err" id="e"></div>
   </form>
@@ -301,20 +321,21 @@ var LOGIN_HTML = `<!doctype html>
     ev.preventDefault();
     const btn = document.getElementById('b');
     const err = document.getElementById('e');
+    const username = document.getElementById('u').value;
     const password = document.getElementById('p').value;
     btn.disabled = true; err.textContent = '';
     try {
       const res = await fetch('/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({ username, password }),
       });
       if (res.ok) { location.replace('/'); return; }
       if (res.status === 429) {
         const d = await res.json().catch(() => ({}));
         err.textContent = '\u0421\u043B\u0438\u0448\u043A\u043E\u043C \u043C\u043D\u043E\u0433\u043E \u043F\u043E\u043F\u044B\u0442\u043E\u043A. \u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 \u0447\u0435\u0440\u0435\u0437 ' + (d.retry_after || 60) + ' \u0441.';
       } else {
-        err.textContent = '\u041D\u0435\u0432\u0435\u0440\u043D\u044B\u0439 \u043F\u0430\u0440\u043E\u043B\u044C';
+        err.textContent = '\u041D\u0435\u0432\u0435\u0440\u043D\u044B\u0439 \u043B\u043E\u0433\u0438\u043D \u0438\u043B\u0438 \u043F\u0430\u0440\u043E\u043B\u044C';
       }
     } catch {
       err.textContent = '\u0421\u0435\u0442\u044C \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u0430';
@@ -621,23 +642,27 @@ app.post("/auth/login", async (c) => {
   if (blocked > 0) {
     return c.json({ error: "Too many attempts", retry_after: blocked }, 429);
   }
+  let username;
   let password;
   try {
     const body = await c.req.json();
+    username = body.username;
     password = body.password;
   } catch {
-    return c.json({ error: "Bad request: expected JSON {password}" }, 400);
+    return c.json({ error: "Bad request: expected JSON {username, password}" }, 400);
   }
-  if (typeof password !== "string" || !verifyPassword(password, cfg.password)) {
+  const userOk = typeof username === "string" && verifyPassword(username, cfg.username);
+  const passOk = typeof password === "string" && verifyPassword(password, cfg.password);
+  if (!userOk || !passOk) {
     recordLoginFail(ip);
     console.warn(`[bff] \u043D\u0435\u0443\u0434\u0430\u0447\u043D\u044B\u0439 \u043B\u043E\u0433\u0438\u043D \u0441 ${ip}`);
-    return c.json({ error: "Invalid password" }, 401);
+    return c.json({ error: "Invalid credentials" }, 401);
   }
   clearLoginFails(ip);
   const sid = createSession(ip);
   c.header("Set-Cookie", sessionSetCookie(sid, isSecureRequest(c)));
-  console.log(`[bff] \u043B\u043E\u0433\u0438\u043D ok (${ip})`);
-  return c.json({ ok: true });
+  console.log(`[bff] \u043B\u043E\u0433\u0438\u043D ok user=${cfg.username} (${ip})`);
+  return c.json({ ok: true, user: cfg.username });
 });
 app.post("/auth/logout", (c) => {
   destroySession(sessionFromCookies(c));
@@ -654,7 +679,7 @@ app.use("*", async (c, next) => {
   }
   await next();
 });
-app.get("/api/me", (c) => c.json({ ok: true, user: "operator" }));
+app.get("/api/me", (c) => c.json({ ok: true, user: cfg.username }));
 app.get("/api/agents", (c) => c.json({ agents: registry.publicAgents }));
 function toHonoResponse(up) {
   return new Response(new Uint8Array(up.body), {
