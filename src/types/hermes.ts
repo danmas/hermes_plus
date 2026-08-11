@@ -73,6 +73,40 @@ export interface SessionsListResponse {
   offset?: number;
 }
 
+/**
+ * Хит FTS5-поиска `GET /api/sessions/search?q=...`.
+ * Живой замер 2026-08-10 (Hermes 0.20.0, l1 192.168.1.221): envelope
+ * `{ results: [...] }`; `snippet` содержит совпадение, размеченное
+ * маркерами `>>>match<<<`.
+ */
+export interface SessionSearchHit {
+  id: string;
+  session_id?: string;
+  lineage_root?: string;
+  title?: string;
+  preview?: string;
+  snippet?: string;
+  role?: string;
+  source?: string;
+  model?: string;
+  started_at?: number;
+  ended_at?: number | null;
+  session_started?: number;
+  last_active?: number;
+  is_active?: boolean;
+  message_count?: number;
+  tool_call_count?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  parent_session_id?: string | null;
+  archived?: boolean;
+  [k: string]: unknown;
+}
+
+export interface SessionSearchResponse {
+  results: SessionSearchHit[];
+}
+
 export interface SessionMessagesResponse {
   session_id: string;
   messages: HermesSessionMessage[];

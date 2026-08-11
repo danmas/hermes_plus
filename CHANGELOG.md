@@ -170,3 +170,39 @@
   Раньше закэшированный браузером `index.html` тянул старый бандл, который
   запрашивал dev-эндпоинты `/l1/api/auth/session-token` и `/l1/api/auth/ws-ticket`
   → 404 в консоли (в prod они заблокированы; auth полностью server-side).
+
+## [0.4.0] - 2026-08-10
+
+### Добавлено (sessions-search)
+
+- **Поиск по сессиям в трёх scope-ах** в панели сессий (`_SessionList.tsx`):
+  - **Session** — клиентский поиск по загруженным сообщениям открытой сессии
+    (`content` + `tool_calls`); переиспользует кэш `['messages', ...]` TanStack Query;
+    при неполной загрузке показывает честную пометку «искали в N загруженных сообщениях»;
+  - **Agent** — FTS5-поиск `GET /api/sessions/search?q=` на активном таргете
+    (1 запрос, без N GET сообщений); рендер сниппетов с подсветкой `>>>match<<<`;
+  - **Fleet** — параллельный fan-out по всем таргетам реестра (`Promise.allSettled`,
+    per-target timeout 3 с, пропуск offline по fleet-health, ошибки не валят общий
+    результат); хиты помечены агентом, сортировка по времени активности.
+- Поиск в чате (`_ChatConsole.tsx`): scroll-to-match и подсветка `<mark>` найденных
+  совпадений в транскрипте (focusMessage).
+- Переключатель scope Session | Agent | Fleet + общий поисковый ввод с debounce 300 мс;
+  пустой запрос возвращает обычный список сессий; пустые/загрузочные состояния
+  показывают активный scope.
+- `src/api/client.ts`: метод `searchSessions(q, {limit, offset, signal})` с
+  нормализацией запроса для FTS5 (`normalizeFtsQuery` — оборачивание в кавычки,
+  экранирование `"`) и пробросом внешнего `AbortSignal` (отмена запроса при новом вводе).
+- `src/utils/_sessionSearch.ts`: `searchFleetSessions` (fan-out, таймауты, ошибки
+  таргетов) и `parseSnippet` (парсер маркеров `>>>`/`<<<`).
+- Типы `SessionSearchHit` / `SessionSearchResponse` (`src/types/hermes.ts`) по
+  результатам живого probe.
+- Стили поиска в `src/_index.css` (scope-switcher, карточки хитов, сниппеты, `<mark>`).
+
+### Изменено
+
+- `src/App.tsx`: состояние `messageFocus`, выбор сессии из результатов поиска
+  (в т.ч. с переключением агента в Fleet-scope), проброс `fleetHealth` в панель сессий.
+- KB: `README_SURVEY.md` — живой замер `GET /api/sessions/search` (конверт
+  `{results:[...]}`, пример hit с полями, поведение пустого `q`/неизвестного profile,
+  маркеры `>>>match<<<`, полный транскрипт messages без `has_more`).
+

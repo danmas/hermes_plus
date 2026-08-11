@@ -82,6 +82,18 @@ function agentsConfigPlugin(env: Record<string, string>): Plugin {
         }
       });
 
+      // Dev-заглушка /api/me: в dev нет prod-BFF auth-guard, но фронт
+      // (App.tsx) при старте дёргает /api/me. Без этой заглушки запрос
+      // ушёл бы через proxy на Hermes :9119, тот вернул бы 401 на неизвестный
+      // gated-роут → App делает redirect на /login → /login отдаёт тот же SPA
+      // → снова /api/me → 401 → бесконечный цикл. Отдаём 404, чтобы guard
+      // пропустил UI (см. комментарий в App.tsx).
+      server.middlewares.use('/api/me', (_req, res) => {
+        res.statusCode = 404;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: 'no auth-guard in dev' }));
+      });
+
       // Dev-эндпоинт получения session token из локального Hermes
       server.middlewares.use('/api/auth/session-token', async (_req, res) => {
         try {

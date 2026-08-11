@@ -438,3 +438,109 @@ body {
   font-weight: 500;
 }
 
+/* ── Поиск по сессиям (openspec sessions-search) ── */
+.search-controls {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.search-input {
+  width: 100%;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 12px;
+  padding: 6px 10px;
+  outline: none;
+  transition: border-color var(--transition-fast);
+}
+
+.search-input:focus {
+  border-color: var(--border-focus);
+}
+
+.scope-switch {
+  display: flex;
+  gap: 4px;
+}
+
+.scope-btn {
+  flex: 1;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 3px 6px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.scope-btn:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.scope-btn.active {
+  background: var(--accent-glow);
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.scope-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.search-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 6px 2px;
+}
+
+.search-error {
+  font-size: 11px;
+  color: var(--status-offline);
+  padding: 6px 2px;
+}
+
+.search-snippet {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin: 4px 0;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+.agent-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 500;
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  color: var(--status-online);
+  border-radius: 4px;
+  padding: 1px 5px;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+mark {
+  background: rgba(245, 158, 11, 0.4);
+  color: var(--text-primary);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+.message-bubble.search-match {
+  border: 1px solid rgba(245, 158, 11, 0.5);
+}
+

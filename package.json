@@ -1,6 +1,6 @@
 {
   "name": "hermes_plus",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "UI-оболочка для Hermes Agent: fleet skills/sessions/config/чат через web-API дашборда",
   "private": true,
   "type": "module",

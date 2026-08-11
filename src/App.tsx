@@ -4,7 +4,7 @@ import { getAgents, getAgentsSync } from './config/agents';
 import type { AgentTarget } from './types/agent';
 import { useFleet } from './hooks/useFleet';
 import FleetSelector from './components/_FleetSelector';
-import SessionList from './components/_SessionList';
+import SessionList, { type MessageFocus } from './components/_SessionList';
 import ChatConsole from './components/_ChatConsole';
 
 export default function App() {
@@ -36,6 +36,8 @@ export default function App() {
   const [agents, setAgents] = useState<AgentTarget[]>(() => getAgentsSync());
   const [selectedAgentId, setSelectedAgentId] = useState<string>(agents[0]?.id ?? '');
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  // Session scope поиска: фокус на сообщении в ChatConsole
+  const [messageFocus, setMessageFocus] = useState<MessageFocus | null>(null);
 
   // Состояние сворачивания панелей
   const [isFleetCollapsed, setIsFleetCollapsed] = useState(false);
@@ -69,6 +71,12 @@ export default function App() {
   const handleSelectAgent = (id: string) => {
     setSelectedAgentId(id);
     setSelectedSessionId(null); // сбрасываем сессию при смене агента
+    setMessageFocus(null); // фокус поиска относился к прежней сессии
+  };
+
+  const handleSelectSession = (id: string | null) => {
+    setSelectedSessionId(id);
+    setMessageFocus(null); // при смене сессии фокус неактуален
   };
 
   return (
@@ -90,8 +98,12 @@ export default function App() {
         <SessionList
           key={`sessions-${activeAgent.id}`}
           agent={activeAgent}
+          agents={agents}
           selectedSessionId={selectedSessionId}
-          onSelectSession={setSelectedSessionId}
+          onSelectSession={handleSelectSession}
+          onSelectAgent={handleSelectAgent}
+          onFocusMessage={setMessageFocus}
+          fleetHealth={fleetHealth}
           isCollapsed={isSessionsCollapsed}
           onToggleCollapse={() => setIsSessionsCollapsed(!isSessionsCollapsed)}
         />
@@ -103,7 +115,8 @@ export default function App() {
           key={`chat-${activeAgent.id}`}
           agent={activeAgent}
           sessionId={selectedSessionId}
-          onSessionCreated={setSelectedSessionId}
+          onSessionCreated={handleSelectSession}
+          focusMessage={messageFocus}
         />
       )}
     </div>

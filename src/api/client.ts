@@ -24,6 +24,19 @@ export class HermesApiError extends Error {
   }
 }
 
+/**
+ * Нормализация пользовательского запроса для FTS5 (openspec sessions-search, D2).
+ * Оборачиваем в двойные кавычки (phrase-запрос), экранируя внутренние `"`
+ * удвоением — так спецсимволы FTS5 (`*`, `-`, `:`, `{`, …) в пользовательском
+ * вводе вроде `C++` или `"auth"` не сломают синтаксис запроса.
+ * Пустой/пробельный запрос → '' (вызывающий код НЕ должен ходить в API).
+ */
+export function normalizeFtsQuery(q: string): string {
+  const trimmed = q.trim();
+  if (!trimmed) return '';
+  return `"${trimmed.replace(/"/g, '""')}"`;
+}
+
 let cachedLocalToken: string | null = null;
 
 /**
@@ -244,6 +257,13 @@ export class HermesClient {
 
   private async rawRequest<T>(fullUrl: string, init?: RequestInit): Promise<T> {
     const ctrl = new AbortController();
+    // Внешний signal (напр. отмена устаревшего поиска при debounce) —
+    // пробрасываем в наш timeout-контроллер.
+    const external = init?.signal;
+    if (external) {
+      if (external.aborted) ctrl.abort();
+      else external.addEventListener('abort', () => ctrl.abort(), { once: true });
+    }
     const t = setTimeout(() => ctrl.abort(), this.timeoutMs);
     try {
       const res = await fetch(fullUrl, { ...init, signal: ctrl.signal });
@@ -311,6 +331,29 @@ export class HermesClient {
       }
       throw e;
     }
+  }
+
+  /**
+   * FTS5-поиск по всем сессиям таргета — `GET /api/sessions/search?q=...`.
+   * Запрос нормализуется (normalizeFtsQuery); пустой q → ошибка вызывающего
+   * кода (здесь бросаем, чтобы не слать бессмысленный запрос).
+   * Живой замер 2026-08-10: envelope `{ results: [...] }`, limit/offset
+   * поддерживаются, пустой q на сервере → `{results:[]}`, неизвестный
+   * profile → 404.
+   */
+  searchSessions(q: string, opts?: { limit?: number; offset?: number; signal?: AbortSignal }) {
+    const normalized = normalizeFtsQuery(q);
+    if (!normalized) {
+      return Promise.reject(new HermesApiError(0, 'searchSessions: empty query'));
+    }
+    const params = new URLSearchParams();
+    params.set('q', normalized);
+    if (opts?.limit != null) params.set('limit', String(opts.limit));
+    if (opts?.offset != null) params.set('offset', String(opts.offset));
+    return this.request<import('../types/hermes').SessionSearchResponse>(
+      `/api/sessions/search?${params.toString()}`,
+      { signal: opts?.signal },
+    );
   }
 
   getProfiles() {

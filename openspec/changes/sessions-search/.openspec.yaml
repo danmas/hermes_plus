@@ -1,0 +1,5 @@
+schema: spec-driven
+id: sessions-search
+title: Session search — in-session, per-agent, fleet-wide
+status: proposed
+created: 2026-08-10

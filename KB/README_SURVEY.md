@@ -124,6 +124,27 @@ GET    /api/profiles/sessions/sidebar
 > **Заметки по `GET /api/sessions` (живой замер 2026-08-08):**
 > - **Сортировка:** API не принимает параметры сортировки (`order=desc` возвращает `400 Bad Request`, `sort=...` игнорируется). Дефолтный порядок выдачи — `started_at` DESC из SQLite. Клиент гарантирует Newest-First сортировку страницы через `sortSessionsNewestFirst`.
 > - **Формат таймстемпов:** `started_at`, `ended_at`, `last_active`, `last_activity_at` возвращаются в **секундах** Unix (float, напр. `1786122045.374`). В JS-клиенте нормализуются умножением на 1000 (`ts < 1e12 ? ts * 1000 : ts`).
+>
+> **Заметки по `GET /api/sessions/search` (живой замер 2026-08-10, l1 `192.168.1.221:9119`, cookie-auth):**
+> - Конверт ответа — `{ "results": [...] }` (НЕ `{sessions}`); поддерживает `limit`/`offset`. Пустой `q` → `200 {results:[]}`; неизвестный `profile` → `404 {detail:"Profile '...' does not exist."}`; без auth → `401`.
+> - FTS5-спецсимволы (`C++`, `"auth"`) сервер принимает без ошибки (200), но клиент нормализует запрос (кавычки, экранирование `"`).
+> - Совпадения в `snippet` помечены маркерами `>>>match<<<`. Пример одного hit:
+> ```json
+> {
+>   "snippet": "...import __editable___>>>hermes<<<_agent_0_20_0_finder; ...",
+>   "role": "tool", "source": "telegram", "model": "deepseek-v4-flash",
+>   "session_started": 1786012097.8982022, "session_id": "20260806_132817_afa4e97e",
+>   "lineage_root": "20260806_132817_afa4e97e", "id": "20260806_132817_afa4e97e",
+>   "title": "Updating Hermes via Gateway", "started_at": 1786012097.8982022,
+>   "ended_at": null, "last_active": 1786375955.5978017, "is_active": false,
+>   "message_count": 296, "tool_call_count": 112,
+>   "input_tokens": 718361, "output_tokens": 224429,
+>   "preview": "я могу сдtkать обновление гермеса через gateway ?  hermes up...",
+>   "parent_session_id": null, "archived": false
+> }
+> ```
+> - Таймстемпы — тоже в секундах Unix (float); `id` совпадает с `session_id`.
+> - `GET /api/sessions/{id}/messages` без `limit` отдаёт **весь** транскрипт (`pagination.limit=null`, поле `has_more` отсутствует) — in-session поиск по загруженным сообщениям работает без докачки.
 
 (роутеры: `list_router`, `search_router`, `manage_router` в `web_routers/sessions.py`;
 `sessions_router` в `web_routers/profiles.py`)

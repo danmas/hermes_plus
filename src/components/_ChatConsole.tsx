@@ -5,11 +5,32 @@ import { HermesWsClient } from '../api/ws';
 import { formatBytes, sessionPayloadSize } from '../utils/_sessionSize';
 import type { AgentTarget } from '../types/agent';
 import type { HermesSessionMessage, SessionMessagesResponse } from '../types/hermes';
+import type { MessageFocus } from './_SessionList';
 
 interface ChatConsoleProps {
   agent: AgentTarget;
   sessionId: string | null;
   onSessionCreated?: (newId: string) => void;
+  /** Session scope поиска: подсветка query + скролл к сообщению index */
+  focusMessage?: MessageFocus | null;
+}
+
+/** Подсветка вхождений query в тексте (case-insensitive), с cap на число <mark>. */
+function highlightText(text: string, query: string): React.ReactNode {
+  if (!query || !text) return text;
+  const lower = text.toLowerCase();
+  const q = query.toLowerCase();
+  const nodes: React.ReactNode[] = [];
+  let pos = 0;
+  let i = lower.indexOf(q);
+  while (i !== -1 && nodes.length < 200) {
+    if (i > pos) nodes.push(text.slice(pos, i));
+    nodes.push(<mark key={`m${i}`}>{text.slice(i, i + q.length)}</mark>);
+    pos = i + q.length;
+    i = lower.indexOf(q, pos);
+  }
+  nodes.push(text.slice(pos));
+  return nodes;
 }
 
 interface StreamingState {
@@ -19,7 +40,7 @@ interface StreamingState {
   tools?: Array<{ name: string; args?: unknown; output?: string; status: 'running' | 'done' }>;
 }
 
-export default function ChatConsole({ agent, sessionId, onSessionCreated }: ChatConsoleProps) {
+export default function ChatConsole({ agent, sessionId, onSessionCreated, focusMessage }: ChatConsoleProps) {
   const [messages, setMessages] = useState<HermesSessionMessage[]>([]);
   const [inputText, setInputText] = useState('');
   const [streamingResponse, setStreamingResponse] = useState<StreamingState | null>(null);
@@ -28,6 +49,8 @@ export default function ChatConsole({ agent, sessionId, onSessionCreated }: Chat
 
   const wsClientRef = useRef<HermesWsClient | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  /** Refs на бабблы сообщений — для скролла к совпадению (Session scope) */
+  const messageRefs = useRef<Array<HTMLDivElement | null>>([]);
   /** Gateway-внутренний ID сессии (для WS-операций: submitPrompt, interrupt).
    *  Отличается от sessionId (DB ID для REST). Заполняется из session.seeded
    *  или createSession. Сбрасывается при смене sessionId. */
@@ -54,6 +77,13 @@ export default function ChatConsole({ agent, sessionId, onSessionCreated }: Chat
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, streamingResponse]);
+
+  // Session scope: скролл к сообщению-совпадению (openspec sessions-search)
+  useEffect(() => {
+    if (!focusMessage) return;
+    const el = messageRefs.current[focusMessage.index];
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [focusMessage, messages]);
 
   // Загрузка сообщений существующей сессии (только для сохраненных сессий)
   const isRealSavedSession = !!sessionId && sessionId !== 'new';
@@ -363,8 +393,17 @@ export default function ChatConsole({ agent, sessionId, onSessionCreated }: Chat
         <div className="chat-messages">
           {isHistoryLoading && <div style={{ color: 'var(--text-muted)' }}>Загрузка истории...</div>}
 
-          {messages.map((msg, idx) => (
-            <div key={idx} className={`message-bubble ${msg.role === 'user' ? 'user' : ''}`}>
+          {messages.map((msg, idx) => {
+            const isMatch =
+              !!focusMessage &&
+              ((msg.content ?? '').toLowerCase().includes(focusMessage.query.toLowerCase()) ||
+                (msg.tool_calls ? JSON.stringify(msg.tool_calls).toLowerCase().includes(focusMessage.query.toLowerCase()) : false));
+            return (
+            <div
+              key={idx}
+              ref={(el) => { messageRefs.current[idx] = el; }}
+              className={`message-bubble ${msg.role === 'user' ? 'user' : ''} ${isMatch ? 'search-match' : ''}`}
+            >
               <div className="message-meta">
                 <span>{msg.role === 'user' ? 'Вы' : 'Hermes Agent'}</span>
                 {msg.timestamp && (
@@ -379,7 +418,9 @@ export default function ChatConsole({ agent, sessionId, onSessionCreated }: Chat
                 </div>
               )}
 
-              <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+              <div style={{ whiteSpace: 'pre-wrap' }}>
+                {focusMessage ? highlightText(msg.content ?? '', focusMessage.query) : msg.content}
+              </div>
 
               {/* Вызовы инструментов */}
               {msg.tool_calls && Array.isArray(msg.tool_calls) && msg.tool_calls.map((t: any, tIdx) => (
@@ -393,7 +434,8 @@ export default function ChatConsole({ agent, sessionId, onSessionCreated }: Chat
                 </div>
               ))}
             </div>
-          ))}
+            );
+          })}
 
           {/* Стриминг ответа */}
           {streamingResponse && (
