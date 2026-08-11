@@ -45,10 +45,12 @@ import {
   fetchL254WsTicket,
   getLocalToken,
   invalidateLocalToken,
+  localAuthHeaders,
   pickRequestHeaders,
   relayToUpstream,
   resetL1Jar,
   resetL254Jar,
+  resetLocalJar,
   toWsUrl,
   type UpstreamResponse,
 } from './upstream';
@@ -166,6 +168,33 @@ app.get('/api/me', (c) => c.json({ ok: true, user: cfg.username }));
 /** Реестр агентов БЕЗ секретов (sanitize в server/config.ts). */
 app.get('/api/agents', (c) => c.json({ agents: registry.publicAgents }));
 
+/**
+ * WS-тикет для local Hermes (same-origin).
+ * Браузер открывает ws://host/api/ws?ticket=… — cookie на upgrade не поставит.
+ */
+app.post('/api/auth/ws-ticket', async (c) => {
+  try {
+    const auth = await localAuthHeaders(cfg);
+    const res = await fetch(cfg.localOrigin + '/api/auth/ws-ticket', {
+      method: 'POST',
+      headers: { Accept: 'application/json', ...auth },
+    });
+    const text = await res.text();
+    return new Response(text, {
+      status: res.status,
+      headers: { 'content-type': 'application/json', ...SECURITY_HEADERS },
+    });
+  } catch (e) {
+    return c.json(
+      {
+        error: 'Failed to mint local WS ticket',
+        details: e instanceof Error ? e.message : String(e),
+      },
+      502,
+    );
+  }
+});
+
 // ── Skill copy export/import (ДО catch-all /api/* proxy) ─────────────────────
 // openspec skills-copy-dnd: BFF собирает SkillPackage через /api/fs/* + create.
 
@@ -265,27 +294,26 @@ app.all('/api/*', async (c) => {
   const headers = pickRequestHeaders(incoming.headers);
   const hasBody = method !== 'GET' && method !== 'HEAD';
 
-  const doRequest = async (token: string | null) => {
-    if (token) headers['x-hermes-session-token'] = token;
+  const doRequest = async (auth: Record<string, string>) => {
+    const h = { ...headers, ...auth };
     return relayToUpstream({
       origin: cfg.localOrigin,
       path: upstreamPath,
       method,
-      headers,
+      headers: h,
       body: hasBody ? incoming : null,
     });
   };
 
   try {
-    const token = await getLocalToken(cfg);
-    let up = await doRequest(token);
-    // 401 → токен из HTML мог устареть (рестарт Hermes): обновить и повторить один раз
-    if (up.status === 401 && !cfg.sessionToken) {
+    let auth = await localAuthHeaders(cfg);
+    let up = await doRequest(auth);
+    // 401 → токен/cookie устарели: сбросить и повторить один раз (без body)
+    if (up.status === 401 && !hasBody) {
       invalidateLocalToken();
-      const fresh = await getLocalToken(cfg);
-      if (fresh && fresh !== token) {
-        up = await doRequest(fresh);
-      }
+      resetLocalJar();
+      auth = await localAuthHeaders(cfg);
+      up = await doRequest(auth);
     }
     return toHonoResponse(up);
   } catch (e) {

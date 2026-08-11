@@ -121,13 +121,17 @@ export default function ChatConsole({ agent, sessionId, onSessionCreated, focusM
     let ws: HermesWsClient | null = null;
 
     const setupWs = async () => {
-      // 1. Получаем токен (loopback) или WS-тикет (cookie-auth / LAN)
+      // 1. Auth для WS upgrade: token (SESSION_TOKEN) или ticket (cookie-сессия).
+      // Local при auth_required: token из HTML обычно null → берём ticket same-origin.
       let activeToken: string | null = null;
       let activeTicket: string | null = null;
       if (agent.proxyPath && agent.auth.type === 'cookie') {
         activeTicket = await client.getWsTicket();
       } else {
         activeToken = await client.getToken();
+        if (!activeToken) {
+          activeTicket = await client.getWsTicket();
+        }
       }
 
       if (isCancelled) return;

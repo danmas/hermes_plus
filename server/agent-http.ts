@@ -6,10 +6,11 @@ import type { BffConfig } from './config';
 import {
   ensureL1Login,
   ensureL254Login,
-  getLocalToken,
   invalidateLocalToken,
+  localAuthHeaders,
   resetL1Jar,
   resetL254Jar,
+  resetLocalJar,
 } from './upstream';
 
 export class AgentHttpError extends Error {
@@ -73,10 +74,8 @@ export function createAgentHttp(cfg: BffConfig, agent: AgentTarget): AgentHttp {
       agent.baseUrl && /^https?:\/\//i.test(agent.baseUrl)
         ? agent.baseUrl.replace(/\/$/, '')
         : cfg.localOrigin;
-    const token = await getLocalToken(cfg);
-    const headers: Record<string, string> = { Accept: 'application/json' };
-    if (token) headers['X-Hermes-Session-Token'] = token;
-    return { origin, headers };
+    const auth = await localAuthHeaders(cfg);
+    return { origin, headers: { Accept: 'application/json', ...auth } };
   }
 
   async function request(
@@ -111,6 +110,7 @@ export function createAgentHttp(cfg: BffConfig, agent: AgentTarget): AgentHttp {
         return request(method, path, body, false);
       }
       invalidateLocalToken();
+      resetLocalJar();
       return request(method, path, body, false);
     }
     return { status: res.status, json, text };

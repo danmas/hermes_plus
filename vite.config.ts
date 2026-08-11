@@ -109,6 +109,52 @@ function agentsConfigPlugin(env: Record<string, string>): Plugin {
           res.end(JSON.stringify({ error: 'Failed to fetch session token from upstream', details: e instanceof Error ? e.message : String(e) }));
         }
       });
+
+      // WS-тикет для local Hermes (auth_required: true — cookie login server-side)
+      server.middlewares.use('/api/auth/ws-ticket', async (req, res) => {
+        if (req.method !== 'POST' && req.method !== 'GET') {
+          res.statusCode = 405;
+          res.end(JSON.stringify({ error: 'POST or GET' }));
+          return;
+        }
+        try {
+          const headers: Record<string, string> = { Accept: 'application/json' };
+          if (LOCAL.username && LOCAL.password) {
+            const jar = await ensureLocalLogin();
+            if (jar) headers['Cookie'] = jar;
+          }
+          const token =
+            process.env.HERMES_DASHBOARD_SESSION_TOKEN ||
+            (await (async () => {
+              try {
+                const r = await fetch('http://127.0.0.1:9119/');
+                const html = await r.text();
+                return html.match(/SESSION_TOKEN__\s*=\s*"([^"]+)"/)?.[1] ?? '';
+              } catch {
+                return '';
+              }
+            })());
+          if (token) headers['X-Hermes-Session-Token'] = token;
+
+          const upstream = await fetch('http://127.0.0.1:9119/api/auth/ws-ticket', {
+            method: 'POST',
+            headers,
+          });
+          const text = await upstream.text();
+          res.statusCode = upstream.status;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(text);
+        } catch (e) {
+          res.statusCode = 502;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(
+            JSON.stringify({
+              error: 'Failed to mint local WS ticket',
+              details: e instanceof Error ? e.message : String(e),
+            }),
+          );
+        }
+      });
     },
   };
 }
@@ -126,6 +172,48 @@ const L1 = {
   cookieJar: '',
   loginPromise: null as Promise<string> | null,
 };
+
+/** Local Hermes (127.0.0.1:9119) cookie jar when auth_required and no SESSION_TOKEN__ */
+const LOCAL = {
+  origin: 'http://127.0.0.1:9119',
+  username: '',
+  password: '',
+  cookieJar: '',
+  loginPromise: null as Promise<string> | null,
+};
+
+async function ensureLocalLogin(): Promise<string> {
+  if (LOCAL.cookieJar) return LOCAL.cookieJar;
+  if (!LOCAL.loginPromise) {
+    LOCAL.loginPromise = (async () => {
+      if (!LOCAL.username || !LOCAL.password) {
+        throw new Error(
+          'local Hermes auth_required: set HERMES_LOCAL_USERNAME / HERMES_LOCAL_PASSWORD in .env.local',
+        );
+      }
+      const loginRes = await fetch(LOCAL.origin + '/auth/password-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: 'basic',
+          username: LOCAL.username,
+          password: LOCAL.password,
+        }),
+      });
+      if (!loginRes.ok) throw new Error(`local Hermes login failed: HTTP ${loginRes.status}`);
+      const setCookies = loginRes.headers.getSetCookie?.() ?? [];
+      LOCAL.cookieJar = setCookies
+        .map((c) => c.split(';')[0])
+        .filter((c) => /^hermes_session_(at|rt|provider)=/.test(c))
+        .join('; ');
+      if (!LOCAL.cookieJar) throw new Error('local login ok but no session cookies');
+      return LOCAL.cookieJar;
+    })().finally(() => {
+      LOCAL.loginPromise = null;
+    });
+  }
+  return LOCAL.loginPromise;
+}
 
 /** Ленивый логин: один раз (и после 401), дальше переиспользуем jar */
 async function ensureL1Login(): Promise<string> {
@@ -262,6 +350,109 @@ function l1ProxyPlugin(): Plugin {
     },
   };
 }
+/**
+ * Local Hermes /api proxy with await cookie/token inject (auth_required:true).
+ * Handles requests before Vite proxy so first requests are not unauthenticated.
+ */
+function localApiAuthPlugin(env: Record<string, string>): Plugin {
+  return {
+    name: 'hermes-plus-local-api-auth',
+    configureServer(server) {
+      server.middlewares.use(async (req, res, next) => {
+        const url = req.url || '';
+        // Only REST /api/* — not our special middleware routes, not WS upgrade
+        if (!url.startsWith('/api/')) return next();
+        if (
+          url.startsWith('/api/agents') ||
+          url.startsWith('/api/me') ||
+          url.startsWith('/api/auth/session-token') ||
+          url.startsWith('/api/auth/ws-ticket') ||
+          url.startsWith('/api/ws') ||
+          url.startsWith('/api/events') ||
+          url.startsWith('/api/pub')
+        ) {
+          return next();
+        }
+        if (req.headers.upgrade?.toLowerCase() === 'websocket') return next();
+
+        try {
+          const headers: Record<string, string> = {
+            Accept: req.headers.accept || 'application/json',
+          };
+          if (req.headers['content-type']) {
+            headers['Content-Type'] = String(req.headers['content-type']);
+          }
+          const token = env.HERMES_DASHBOARD_SESSION_TOKEN || '';
+          if (token) headers['X-Hermes-Session-Token'] = token;
+
+          if (LOCAL.username && LOCAL.password) {
+            try {
+              const jar = await ensureLocalLogin();
+              if (jar) headers['Cookie'] = jar;
+            } catch (e) {
+              console.warn(
+                '[vite] local Hermes login failed:',
+                e instanceof Error ? e.message : e,
+              );
+            }
+          }
+
+          const method = req.method || 'GET';
+          let body: Buffer | undefined;
+          if (method !== 'GET' && method !== 'HEAD') {
+            const chunks: Buffer[] = [];
+            for await (const chunk of req) {
+              chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+            }
+            body = Buffer.concat(chunks);
+          }
+
+          const upstream = await fetch(LOCAL.origin + url, {
+            method,
+            headers,
+            body: body && body.length ? body : undefined,
+          });
+
+          if (upstream.status === 401 && LOCAL.cookieJar) {
+            LOCAL.cookieJar = '';
+            try {
+              const jar = await ensureLocalLogin();
+              if (jar) headers['Cookie'] = jar;
+            } catch {
+              /* keep going */
+            }
+            const retry = await fetch(LOCAL.origin + url, {
+              method,
+              headers,
+              body: body && body.length ? body : undefined,
+            });
+            const retryBuf = Buffer.from(await retry.arrayBuffer());
+            res.statusCode = retry.status;
+            const ct = retry.headers.get('content-type');
+            if (ct) res.setHeader('Content-Type', ct);
+            res.end(retryBuf);
+            return;
+          }
+
+          const buf = Buffer.from(await upstream.arrayBuffer());
+          res.statusCode = upstream.status;
+          const ct = upstream.headers.get('content-type');
+          if (ct) res.setHeader('Content-Type', ct);
+          res.end(buf);
+        } catch (e) {
+          res.statusCode = 502;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(
+            JSON.stringify({
+              detail: `local API BFF error: ${e instanceof Error ? e.message : String(e)}`,
+            }),
+          );
+        }
+      });
+    },
+  };
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 
 // Порт 5173 — по умолчанию. Не использовать 3000-3002 (заняты Kosmos Panel).
@@ -276,15 +467,29 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   L1.username = env.VITE_HERMES_L1_USERNAME || '';
   L1.password = env.VITE_HERMES_L1_PASSWORD || '';
+  LOCAL.username =
+    env.HERMES_LOCAL_USERNAME || env.VITE_HERMES_LOCAL_USERNAME || '';
+  LOCAL.password =
+    env.HERMES_LOCAL_PASSWORD || env.VITE_HERMES_LOCAL_PASSWORD || '';
 
   return {
-    plugins: [react(), agentsConfigPlugin(env), l1ProxyPlugin()],
+    plugins: [
+      react(),
+      agentsConfigPlugin(env),
+      localApiAuthPlugin(env),
+      l1ProxyPlugin(),
+    ],
     server: {
       port: 5173,
       strictPort: true,
       proxy: {
-        // REST web-API дашборда (локальные профили)
+        // Fallback REST (если middleware не перехватил)
         '/api': {
+          target: 'http://127.0.0.1:9119',
+          changeOrigin: false,
+        },
+        // Dashboard login for local
+        '/auth': {
           target: 'http://127.0.0.1:9119',
           changeOrigin: false,
         },
@@ -293,6 +498,22 @@ export default defineConfig(({ mode }) => {
           target: 'ws://127.0.0.1:9119',
           ws: true,
           changeOrigin: false,
+          configure: (proxy) => {
+            proxy.on('proxyReqWs', (proxyReq) => {
+              // Cookie/token на upgrade — доп. к ?ticket= из клиента
+              if (LOCAL.cookieJar) proxyReq.setHeader('Cookie', LOCAL.cookieJar);
+              else if (LOCAL.username && LOCAL.password) {
+                void ensureLocalLogin()
+                  .then((jar) => {
+                    /* jar warm for next reconnect */
+                    void jar;
+                  })
+                  .catch(() => {});
+              }
+              const token = env.HERMES_DASHBOARD_SESSION_TOKEN || '';
+              if (token) proxyReq.setHeader('X-Hermes-Session-Token', token);
+            });
+          },
         },
         // Прокси для вебсокетов LAN агента (с пробросом auth-кук из BFF)
         '/l1/api/ws': {

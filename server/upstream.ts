@@ -43,6 +43,69 @@ export async function getLocalToken(cfg: BffConfig): Promise<string | null> {
   return tokenCache?.token ?? null;
 }
 
+// Cookie-jar для локального Hermes при auth_required:true (нет SESSION_TOKEN__ в HTML)
+let localJar = '';
+let localLoginPromise: Promise<string> | null = null;
+
+/**
+ * Ленивый password-login на локальный dashboard.
+ * Env: HERMES_LOCAL_USERNAME / HERMES_LOCAL_PASSWORD
+ * (fallback: VITE_HERMES_LOCAL_*).
+ */
+export function ensureLocalLogin(cfg: BffConfig): Promise<string> {
+  if (localJar) return Promise.resolve(localJar);
+  if (!localLoginPromise) {
+    localLoginPromise = (async () => {
+      const env = process.env;
+      const username =
+        env.HERMES_LOCAL_USERNAME || env.VITE_HERMES_LOCAL_USERNAME || '';
+      const password =
+        env.HERMES_LOCAL_PASSWORD || env.VITE_HERMES_LOCAL_PASSWORD || '';
+      if (!username || !password) {
+        throw new Error(
+          'локальный Hermes auth_required, но нет HERMES_LOCAL_USERNAME / HERMES_LOCAL_PASSWORD',
+        );
+      }
+      const res = await fetch(cfg.localOrigin + '/auth/password-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: 'basic', username, password }),
+      });
+      if (!res.ok) throw new Error(`local Hermes login failed: HTTP ${res.status}`);
+      const setCookies = res.headers.getSetCookie?.() ?? [];
+      localJar = setCookies
+        .map((c) => c.split(';')[0])
+        .filter((c) => /^hermes_session_(at|rt|provider)=/.test(c))
+        .join('; ');
+      if (!localJar) throw new Error('local login ok but no session cookies');
+      return localJar;
+    })().finally(() => {
+      localLoginPromise = null;
+    });
+  }
+  return localLoginPromise;
+}
+
+export function resetLocalJar(): void {
+  localJar = '';
+}
+
+export function getLocalJar(): string {
+  return localJar;
+}
+
+/** Auth headers for local Hermes: prefer session-token, else cookie jar. */
+export async function localAuthHeaders(cfg: BffConfig): Promise<Record<string, string>> {
+  const token = await getLocalToken(cfg);
+  if (token) return { 'X-Hermes-Session-Token': token };
+  try {
+    const jar = await ensureLocalLogin(cfg);
+    return { Cookie: jar };
+  } catch {
+    return {};
+  }
+}
+
 export function invalidateLocalToken(): void {
   tokenCache = null;
 }

@@ -40,48 +40,30 @@ export function normalizeFtsQuery(q: string): string {
 let cachedLocalToken: string | null = null;
 
 /**
- * Вытащить SESSION_TOKEN__ для Hermes.
+ * Вытащить SESSION_TOKEN__ для Hermes (только same-origin).
  *
- * 1. Пробуем получить через Vite dev-BFF (/api/auth/session-token, same-origin).
- * 2. Fallback: прямой запрос на 127.0.0.1:9119/ (если не через прокси).
+ * Браузер НИКОГДА не ходит на :9119 напрямую — CORS + auth_required redirect.
+ * Dev: Vite middleware GET /api/auth/session-token (server-side fetch HTML).
+ * Prod: BFF подставляет auth server-side — токен клиенту не нужен.
  */
 async function fetchSessionToken(baseUrl: string): Promise<string | null> {
-  // В prod-сборке prod-BFF подставляет токен server-side
-  // (см. KB/README_SECURITY_PLANS.md) — браузеру токен не нужен и не отдаётся.
   if (import.meta.env.PROD) return null;
-  if (!baseUrl && cachedLocalToken) {
-    return cachedLocalToken;
-  }
-  // 1. Через Vite dev-BFF (same-origin)
-  if (!baseUrl) {
-    try {
-      const bffRes = await fetch('/api/auth/session-token');
-      if (bffRes.ok) {
-        const data = await bffRes.json();
-        if (data?.token) {
-          cachedLocalToken = data.token;
-          return data.token;
-        }
-      }
-    } catch {
-      // игнорируем и пробуем прямой fetch
-    }
-  }
-
-  // 2. Fallback: прямой loopback (CORS разрешён на localhost)
+  // cross-origin baseUrl — токен не запрашиваем из браузера
+  if (baseUrl) return null;
+  if (cachedLocalToken) return cachedLocalToken;
   try {
-    const target = baseUrl || 'http://127.0.0.1:9119';
-    const res = await fetch(`${target}/`);
-    const html = await res.text();
-    const m = html.match(/SESSION_TOKEN__\s*=\s*"([^"]+)"/);
-    if (m?.[1]) {
-      if (!baseUrl) cachedLocalToken = m[1];
-      return m[1];
+    const bffRes = await fetch('/api/auth/session-token');
+    if (bffRes.ok) {
+      const data = await bffRes.json();
+      if (data?.token) {
+        cachedLocalToken = data.token;
+        return data.token;
+      }
     }
-    return null;
   } catch {
-    return null;
+    /* token optional — Vite localApiAuthPlugin injects Cookie on /api/* */
   }
+  return null;
 }
 
 export interface HermesClientOptions {
@@ -178,12 +160,20 @@ export class HermesClient {
     return this.token;
   }
 
-  /** Получить одноразовый WS-тикет для cookie-auth target через BFF.
-   *  В prod-сборке тикет подставляет prod-BFF server-side — не запрашиваем. */
+  /**
+   * Одноразовый WS-тикет (?ticket=) — браузер не может поставить Cookie/Authorization на upgrade.
+   * - LAN (proxyPath): /l1/api/auth/ws-ticket
+   * - Local same-origin (dev Vite / prod BFF): /api/auth/ws-ticket
+   */
   async getWsTicket(): Promise<string | null> {
-    if (!this.proxyPath || import.meta.env.PROD) return null;
+    const path = this.proxyPath
+      ? `${this.proxyPath}/api/auth/ws-ticket`
+      : this.baseUrl
+        ? null // чужой origin — только через proxyPath
+        : '/api/auth/ws-ticket';
+    if (!path) return null;
     try {
-      const res = await fetch(`${this.proxyPath}/api/auth/ws-ticket`, {
+      const res = await fetch(path, {
         method: 'POST',
         headers: { Accept: 'application/json' },
       });
@@ -195,14 +185,22 @@ export class HermesClient {
     }
   }
 
-  /** Feature-detection: /api/health → auth_required */
+  /**
+   * Feature-detection: /api/health → auth_required.
+   * Если auth_required, но username/password не заданы — НЕ форсим cookie
+   * (иначе passwordLogin падает и весь агент уходит в offline).
+   * В dev same-origin Vite/BFF часто подставляют auth server-side.
+   */
   private async detectAuthMode(): Promise<AuthMode> {
     try {
       const health = await this.rawRequest<HermesHealth>(this.authUrl('/api/health'));
-      if (health?.auth_required) return 'cookie';
+      if (health?.auth_required) {
+        if (this.username || this.password) return 'cookie';
+        // loopback / same-origin: session-token (env/HTML) или proxy injects Cookie
+        return 'session-token';
+      }
       return this.username || this.password ? 'cookie' : 'session-token';
     } catch {
-      // нет health — пробуем session-token как раньше
       return this.username || this.password ? 'cookie' : 'session-token';
     }
   }
