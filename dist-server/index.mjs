@@ -374,6 +374,49 @@ async function getLocalToken(cfg2) {
   }
   return tokenCache?.token ?? null;
 }
+var localJar = "";
+var localLoginPromise = null;
+function ensureLocalLogin(cfg2) {
+  if (localJar) return Promise.resolve(localJar);
+  if (!localLoginPromise) {
+    localLoginPromise = (async () => {
+      const env = process.env;
+      const username = env.HERMES_LOCAL_USERNAME || env.VITE_HERMES_LOCAL_USERNAME || "";
+      const password = env.HERMES_LOCAL_PASSWORD || env.VITE_HERMES_LOCAL_PASSWORD || "";
+      if (!username || !password) {
+        throw new Error(
+          "\u043B\u043E\u043A\u0430\u043B\u044C\u043D\u044B\u0439 Hermes auth_required, \u043D\u043E \u043D\u0435\u0442 HERMES_LOCAL_USERNAME / HERMES_LOCAL_PASSWORD"
+        );
+      }
+      const res = await fetch(cfg2.localOrigin + "/auth/password-login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: "basic", username, password })
+      });
+      if (!res.ok) throw new Error(`local Hermes login failed: HTTP ${res.status}`);
+      const setCookies = res.headers.getSetCookie?.() ?? [];
+      localJar = setCookies.map((c) => c.split(";")[0]).filter((c) => /^hermes_session_(at|rt|provider)=/.test(c)).join("; ");
+      if (!localJar) throw new Error("local login ok but no session cookies");
+      return localJar;
+    })().finally(() => {
+      localLoginPromise = null;
+    });
+  }
+  return localLoginPromise;
+}
+function resetLocalJar() {
+  localJar = "";
+}
+async function localAuthHeaders(cfg2) {
+  const token = await getLocalToken(cfg2);
+  if (token) return { "X-Hermes-Session-Token": token };
+  try {
+    const jar = await ensureLocalLogin(cfg2);
+    return { Cookie: jar };
+  } catch {
+    return {};
+  }
+}
 function invalidateLocalToken() {
   tokenCache = null;
 }
@@ -644,10 +687,8 @@ function createAgentHttp(cfg2, agent) {
       };
     }
     const origin = agent.baseUrl && /^https?:\/\//i.test(agent.baseUrl) ? agent.baseUrl.replace(/\/$/, "") : cfg2.localOrigin;
-    const token = await getLocalToken(cfg2);
-    const headers = { Accept: "application/json" };
-    if (token) headers["X-Hermes-Session-Token"] = token;
-    return { origin, headers };
+    const auth = await localAuthHeaders(cfg2);
+    return { origin, headers: { Accept: "application/json", ...auth } };
   }
   async function request(method, path, body, retry = true) {
     const { origin, headers } = await authHeaders();
@@ -676,6 +717,7 @@ function createAgentHttp(cfg2, agent) {
         return request(method, path, body, false);
       }
       invalidateLocalToken();
+      resetLocalJar();
       return request(method, path, body, false);
     }
     return { status: res.status, json, text };
@@ -963,6 +1005,56 @@ async function skillExists(http2, skillName) {
     }
   }
 }
+var HERMES_DESC_MAX = 60;
+function prepareSkillMdForCreate(content) {
+  const fullContent = content;
+  const fm = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
+  if (!fm) {
+    return { createContent: content, fullContent, descriptionShortened: false };
+  }
+  const fmBody = fm[1];
+  const body = fm[2] ?? "";
+  const descMatch = fmBody.match(/^description:\s*(.*)$/m);
+  if (!descMatch) {
+    return { createContent: content, fullContent, descriptionShortened: false };
+  }
+  let desc = descMatch[1].trim();
+  if (desc.startsWith('"') && desc.endsWith('"') || desc.startsWith("'") && desc.endsWith("'")) {
+    desc = desc.slice(1, -1);
+  }
+  if (desc.length <= HERMES_DESC_MAX && desc.endsWith(".")) {
+    return { createContent: content, fullContent, descriptionShortened: false };
+  }
+  let short = desc;
+  const sentenceEnd = desc.search(/[.!?](?:\s|$)/);
+  if (sentenceEnd >= 0 && sentenceEnd + 1 <= HERMES_DESC_MAX) {
+    short = desc.slice(0, sentenceEnd + 1).trim();
+  }
+  if (short.length > HERMES_DESC_MAX || !/[.!?]$/.test(short)) {
+    const cut = Math.max(1, HERMES_DESC_MAX - 1);
+    short = desc.slice(0, cut).replace(/\s+\S*$/, "").trim();
+    if (!short) short = desc.slice(0, cut).trim();
+    if (!/[.!?]$/.test(short)) short = short.replace(/[.,;:\s]+$/, "") + ".";
+    if (short.length > HERMES_DESC_MAX) {
+      short = short.slice(0, HERMES_DESC_MAX - 1) + ".";
+    }
+  }
+  const needsQuote = /[:#{}[\],&*?|>!%@`]/.test(short) || short.includes("'");
+  const yamlDesc = needsQuote ? JSON.stringify(short) : short;
+  const newFm = fmBody.replace(/^description:\s*.*$/m, `description: ${yamlDesc}`);
+  let newBody = body;
+  if (desc.length > short.length && !body.includes(desc.slice(0, 40))) {
+    const inject = `> **Full description (from source skill):** ${desc}
+
+`;
+    newBody = inject + body;
+  }
+  const createContent = `---
+${newFm}
+---
+${newBody}`;
+  return { createContent, fullContent, descriptionShortened: true };
+}
 async function importSkillPackage(http2, pkg, nameOverride) {
   const name = (nameOverride || pkg.name).trim();
   if (!name) throw new Error("import name required");
@@ -973,12 +1065,20 @@ async function importSkillPackage(http2, pkg, nameOverride) {
     (f) => f.relativePath === "SKILL.md" || f.relativePath.toLowerCase() === "skill.md"
   );
   if (!skillMd) throw new Error("package missing SKILL.md");
+  const { createContent, fullContent, descriptionShortened } = prepareSkillMdForCreate(
+    skillMd.content
+  );
+  if (descriptionShortened) {
+    console.warn(
+      `[skill-import] description shortened to \u2264${HERMES_DESC_MAX} chars for Hermes create budget (skill=${name})`
+    );
+  }
   let created = false;
   let skillRoot;
   try {
     await http2.postJson("/api/skills", {
       name,
-      content: skillMd.content,
+      content: createContent,
       category: pkg.category ?? null,
       profile: http2.agent.profile ?? null
     });
@@ -988,6 +1088,14 @@ async function importSkillPackage(http2, pkg, nameOverride) {
     );
     if (!content?.path) throw new Error("cannot resolve skill path after create");
     skillRoot = content.path.replace(/[/\\]SKILL\.md$/i, "");
+    try {
+      await writeTextFile(http2, content.path, fullContent);
+    } catch (e) {
+      console.warn(
+        `[skill-import] full SKILL.md write failed, keeping create version:`,
+        e instanceof Error ? e.message : e
+      );
+    }
     const rest = pkg.files.filter((f) => f.relativePath !== "SKILL.md" && f.relativePath.toLowerCase() !== "skill.md").slice().sort((a, b) => a.relativePath.localeCompare(b.relativePath));
     for (const f of rest) {
       if (f.encoding === "base64") {
@@ -1103,6 +1211,28 @@ app.use("*", async (c, next) => {
 });
 app.get("/api/me", (c) => c.json({ ok: true, user: cfg.username }));
 app.get("/api/agents", (c) => c.json({ agents: registry.publicAgents }));
+app.post("/api/auth/ws-ticket", async (c) => {
+  try {
+    const auth = await localAuthHeaders(cfg);
+    const res = await fetch(cfg.localOrigin + "/api/auth/ws-ticket", {
+      method: "POST",
+      headers: { Accept: "application/json", ...auth }
+    });
+    const text = await res.text();
+    return new Response(text, {
+      status: res.status,
+      headers: { "content-type": "application/json", ...SECURITY_HEADERS }
+    });
+  } catch (e) {
+    return c.json(
+      {
+        error: "Failed to mint local WS ticket",
+        details: e instanceof Error ? e.message : String(e)
+      },
+      502
+    );
+  }
+});
 app.post("/api/skills/export", async (c) => {
   let body;
   try {
@@ -1185,25 +1315,24 @@ app.all("/api/*", async (c) => {
   const method = incoming.method ?? "GET";
   const headers = pickRequestHeaders(incoming.headers);
   const hasBody = method !== "GET" && method !== "HEAD";
-  const doRequest = async (token) => {
-    if (token) headers["x-hermes-session-token"] = token;
+  const doRequest = async (auth) => {
+    const h = { ...headers, ...auth };
     return relayToUpstream({
       origin: cfg.localOrigin,
       path: upstreamPath,
       method,
-      headers,
+      headers: h,
       body: hasBody ? incoming : null
     });
   };
   try {
-    const token = await getLocalToken(cfg);
-    let up = await doRequest(token);
-    if (up.status === 401 && !cfg.sessionToken) {
+    let auth = await localAuthHeaders(cfg);
+    let up = await doRequest(auth);
+    if (up.status === 401 && !hasBody) {
       invalidateLocalToken();
-      const fresh = await getLocalToken(cfg);
-      if (fresh && fresh !== token) {
-        up = await doRequest(fresh);
-      }
+      resetLocalJar();
+      auth = await localAuthHeaders(cfg);
+      up = await doRequest(auth);
     }
     return toHonoResponse(up);
   } catch (e) {

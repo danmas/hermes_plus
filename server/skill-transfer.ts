@@ -249,6 +249,77 @@ export interface ImportResult {
   cleanupFailed?: boolean;
 }
 
+/** Hermes new-skill budget: description ≤60 chars, one sentence, ends with period. */
+const HERMES_DESC_MAX = 60;
+
+/**
+ * Prepare SKILL.md for POST /api/skills:
+ * - if frontmatter description is too long, shorten it to ≤60 ending with '.'
+ * - preserve full original description in the body (so routing detail is not lost)
+ *
+ * After create we still write the full original SKILL.md via write-text when possible.
+ */
+export function prepareSkillMdForCreate(content: string): {
+  createContent: string;
+  fullContent: string;
+  descriptionShortened: boolean;
+} {
+  const fullContent = content;
+  const fm = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
+  if (!fm) {
+    return { createContent: content, fullContent, descriptionShortened: false };
+  }
+  const fmBody = fm[1];
+  const body = fm[2] ?? '';
+  const descMatch = fmBody.match(/^description:\s*(.*)$/m);
+  if (!descMatch) {
+    return { createContent: content, fullContent, descriptionShortened: false };
+  }
+
+  let desc = descMatch[1].trim();
+  // strip surrounding quotes
+  if (
+    (desc.startsWith('"') && desc.endsWith('"')) ||
+    (desc.startsWith("'") && desc.endsWith("'"))
+  ) {
+    desc = desc.slice(1, -1);
+  }
+  // YAML folded style on one line — already flat
+  if (desc.length <= HERMES_DESC_MAX && desc.endsWith('.')) {
+    return { createContent: content, fullContent, descriptionShortened: false };
+  }
+
+  // Build short description: prefer first sentence, else hard-cut
+  let short = desc;
+  const sentenceEnd = desc.search(/[.!?](?:\s|$)/);
+  if (sentenceEnd >= 0 && sentenceEnd + 1 <= HERMES_DESC_MAX) {
+    short = desc.slice(0, sentenceEnd + 1).trim();
+  }
+  if (short.length > HERMES_DESC_MAX || !/[.!?]$/.test(short)) {
+    const cut = Math.max(1, HERMES_DESC_MAX - 1);
+    short = desc.slice(0, cut).replace(/\s+\S*$/, '').trim();
+    if (!short) short = desc.slice(0, cut).trim();
+    if (!/[.!?]$/.test(short)) short = short.replace(/[.,;:\s]+$/, '') + '.';
+    if (short.length > HERMES_DESC_MAX) {
+      short = short.slice(0, HERMES_DESC_MAX - 1) + '.';
+    }
+  }
+
+  // Quote if needed (colon/special)
+  const needsQuote = /[:#{}[\],&*?|>!%@`]/.test(short) || short.includes("'");
+  const yamlDesc = needsQuote ? JSON.stringify(short) : short;
+
+  const newFm = fmBody.replace(/^description:\s*.*$/m, `description: ${yamlDesc}`);
+  let newBody = body;
+  if (desc.length > short.length && !body.includes(desc.slice(0, 40))) {
+    const inject =
+      `> **Full description (from source skill):** ${desc}\n\n`;
+    newBody = inject + body;
+  }
+  const createContent = `---\n${newFm}\n---\n${newBody}`;
+  return { createContent, fullContent, descriptionShortened: true };
+}
+
 export async function importSkillPackage(
   http: AgentHttp,
   pkg: SkillPackage,
@@ -266,14 +337,23 @@ export async function importSkillPackage(
   );
   if (!skillMd) throw new Error('package missing SKILL.md');
 
+  const { createContent, fullContent, descriptionShortened } = prepareSkillMdForCreate(
+    skillMd.content,
+  );
+  if (descriptionShortened) {
+    console.warn(
+      `[skill-import] description shortened to ≤${HERMES_DESC_MAX} chars for Hermes create budget (skill=${name})`,
+    );
+  }
+
   let created = false;
   let skillRoot: string | undefined;
 
   try {
-    // Create skill shell (writes SKILL.md)
+    // Create skill shell (writes SKILL.md) — must pass 60-char description budget
     await http.postJson('/api/skills', {
       name,
-      content: skillMd.content,
+      content: createContent,
       category: pkg.category ?? null,
       profile: http.agent.profile ?? null,
     });
@@ -285,6 +365,18 @@ export async function importSkillPackage(
     );
     if (!content?.path) throw new Error('cannot resolve skill path after create');
     skillRoot = content.path.replace(/[/\\]SKILL\.md$/i, '');
+
+    // Overwrite SKILL.md with full original content when possible
+    // (create path validates 60-char; write-text may accept full file)
+    try {
+      await writeTextFile(http, content.path, fullContent);
+    } catch (e) {
+      // If full write rejected, keep createContent (already on disk with short desc + body note)
+      console.warn(
+        `[skill-import] full SKILL.md write failed, keeping create version:`,
+        e instanceof Error ? e.message : e,
+      );
+    }
 
     // Write remaining files (ordered by path depth so we mkdir parents)
     const rest = pkg.files

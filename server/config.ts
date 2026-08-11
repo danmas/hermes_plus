@@ -81,6 +81,10 @@ export interface BffConfig {
   distDir: string;
 }
 
+/**
+ * Dev-friendly config: full BFF requires HERMES_PLUS_PASSWORD;
+ * Vite skill-transfer middleware may use loadConfigDevFallback() if missing.
+ */
 export function loadConfig(cwd: string): BffConfig {
   const env = mergedEnv(cwd);
   const get = (k: string, dflt = ''): string => env[k] ?? dflt;

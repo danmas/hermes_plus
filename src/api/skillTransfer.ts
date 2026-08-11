@@ -36,14 +36,25 @@ async function parseError(res: Response): Promise<SkillTransferError> {
   try {
     const j = (await res.json()) as {
       error?: string;
+      detail?: string;
+      details?: string;
       cleanedUp?: boolean;
       cleanupFailed?: boolean;
     };
-    if (j.error) msg = j.error;
+    if (typeof j.error === 'string' && j.error) msg = j.error;
+    else if (typeof j.detail === 'string' && j.detail) msg = j.detail;
+    else if (typeof j.details === 'string' && j.details) msg = j.details;
     cleanedUp = j.cleanedUp;
     cleanupFailed = j.cleanupFailed;
+    if (res.status === 405 && msg.startsWith('HTTP ')) {
+      msg =
+        'export/import недоступны на dev-сервере (405). Перезапустите `npm run dev` — нужен skill-transfer middleware.';
+    }
   } catch {
-    /* ignore */
+    if (res.status === 405) {
+      msg =
+        'export/import недоступны (405). Перезапустите `npm run dev` после обновления vite.config.';
+    }
   }
   return new SkillTransferError(msg, res.status, cleanedUp, cleanupFailed);
 }

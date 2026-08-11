@@ -351,6 +351,185 @@ function l1ProxyPlugin(): Plugin {
   };
 }
 /**
+ * Dev: skill export/import (same as prod BFF routes).
+ * Without this, POST /api/skills/export hits Hermes → 405.
+ * Installs at the FRONT of the middleware stack (post-hook + unshift)
+ * so it always wins over the /api → :9119 proxy.
+ */
+function skillTransferPlugin(): Plugin {
+  async function handleSkillTransfer(
+    req: import('http').IncomingMessage,
+    res: import('http').ServerResponse,
+    next: (err?: unknown) => void,
+  ) {
+    const pathOnly = (req.url || '').split('?')[0].replace(/\/+$/, '') || '/';
+    const isExport = pathOnly === '/api/skills/export' || pathOnly.endsWith('/api/skills/export');
+    const isImport = pathOnly === '/api/skills/import' || pathOnly.endsWith('/api/skills/import');
+    if (!isExport && !isImport) {
+      return next();
+    }
+    if (req.method !== 'POST') {
+      res.statusCode = 405;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: 'POST only' }));
+      return;
+    }
+
+    const sendJson = (status: number, body: unknown) => {
+      res.statusCode = status;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify(body));
+    };
+
+    console.log(`[vite] skill-transfer ${req.method} ${pathOnly}`);
+
+    try {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      const raw = Buffer.concat(chunks).toString('utf8') || '{}';
+      let body: Record<string, unknown>;
+      try {
+        body = JSON.parse(raw) as Record<string, unknown>;
+      } catch {
+        sendJson(400, { error: 'Invalid JSON body' });
+        return;
+      }
+
+      const { loadConfig, loadAgentsRegistry, mergedEnv } = await import('./server/config.ts');
+      const { createAgentHttp, AgentHttpError } = await import('./server/agent-http.ts');
+      const { validatePackage } = await import('./server/skill-package.ts');
+      const {
+        exportSkillPackage,
+        importSkillPackage,
+        findAgent,
+        tryAcquireImportLock,
+        releaseImportLock,
+      } = await import('./server/skill-transfer.ts');
+
+      const cwd = process.cwd();
+      let cfg: ReturnType<typeof loadConfig>;
+      try {
+        cfg = loadConfig(cwd);
+      } catch (e) {
+        const envAll = mergedEnv(cwd);
+        cfg = {
+          port: 8787,
+          username: 'dev',
+          password: 'x'.repeat(24),
+          cookieSecure: '0',
+          localOrigin: (envAll.HERMES_LOCAL_ORIGIN || 'http://127.0.0.1:9119').replace(/\/$/, ''),
+          l1Origin: (envAll.HERMES_L1_ORIGIN || 'http://192.168.1.221:9119').replace(/\/$/, ''),
+          l254Origin: (envAll.HERMES_L254_ORIGIN || 'http://192.168.1.254:9119').replace(
+            /\/$/,
+            '',
+          ),
+          sessionToken: envAll.HERMES_DASHBOARD_SESSION_TOKEN || null,
+          l1Username: envAll.HERMES_L1_USERNAME || envAll.VITE_HERMES_L1_USERNAME || '',
+          l1Password: envAll.HERMES_L1_PASSWORD || envAll.VITE_HERMES_L1_PASSWORD || '',
+          l254Username: envAll.HERMES_L254_USERNAME || envAll.VITE_HERMES_L254_USERNAME || '',
+          l254Password: envAll.HERMES_L254_PASSWORD || envAll.VITE_HERMES_L254_PASSWORD || '',
+          distDir: resolve(cwd, 'dist'),
+        };
+        if (e instanceof Error) {
+          console.warn('[vite] skill-transfer: loadConfig failed, using dev cfg:', e.message);
+        }
+      }
+
+      const registry = loadAgentsRegistry(cwd, mergedEnv(cwd));
+      const agents = registry.agents;
+
+      if (isExport) {
+        const agentId = String(body.agentId || '').trim();
+        const skillName = String(body.skillName || '').trim();
+        if (!agentId || !skillName) {
+          sendJson(400, { error: 'agentId and skillName required' });
+          return;
+        }
+        const agent = findAgent(agents, agentId);
+        if (!agent) {
+          sendJson(404, { error: `unknown agentId: ${agentId}` });
+          return;
+        }
+        try {
+          const http = createAgentHttp(cfg, agent);
+          const pkg = await exportSkillPackage(http, skillName);
+          sendJson(200, { ok: true, package: pkg });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          const status = e instanceof AgentHttpError ? e.status : 500;
+          console.warn('[vite] skill export fail:', msg);
+          sendJson(status >= 400 && status < 600 ? status : 500, { error: msg });
+        }
+        return;
+      }
+
+      const agentId = String(body.agentId || '').trim();
+      if (!agentId) {
+        sendJson(400, { error: 'agentId required' });
+        return;
+      }
+      const agent = findAgent(agents, agentId);
+      if (!agent) {
+        sendJson(404, { error: `unknown agentId: ${agentId}` });
+        return;
+      }
+      const checked = validatePackage(body.package);
+      if (!checked.ok) {
+        sendJson(400, { error: checked.error });
+        return;
+      }
+      const pkg = checked.package;
+      const name = String(body.nameOverride || pkg.name).trim();
+      if (!tryAcquireImportLock(agentId, name)) {
+        sendJson(409, { error: 'import already in progress for this skill on target' });
+        return;
+      }
+      try {
+        const http = createAgentHttp(cfg, agent);
+        const result = await importSkillPackage(http, pkg, name);
+        sendJson(200, { ok: true, ...result });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        const cleanedUp = Boolean((e as { cleanedUp?: boolean }).cleanedUp);
+        const cleanupFailed = Boolean((e as { cleanupFailed?: boolean }).cleanupFailed);
+        const status =
+          e instanceof AgentHttpError ? e.status : msg.includes('already exists') ? 409 : 500;
+        console.warn('[vite] skill import fail:', msg);
+        sendJson(status >= 400 && status < 600 ? status : 500, {
+          error: msg,
+          cleanedUp,
+          cleanupFailed,
+        });
+      } finally {
+        releaseImportLock(agentId, name);
+      }
+    } catch (e) {
+      sendJson(500, {
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  return {
+    name: 'hermes-plus-skill-transfer',
+    configureServer(server) {
+      // After internal middlewares are installed, force our handler to the FRONT
+      // so the /api → :9119 proxy never sees export/import.
+      return () => {
+        server.middlewares.stack.unshift({
+          route: '',
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          handle: handleSkillTransfer as any,
+        });
+        console.log('[vite] skill-transfer middleware installed (export/import)');
+      };
+    },
+  };
+}
+
+/**
  * Local Hermes /api proxy with await cookie/token inject (auth_required:true).
  * Handles requests before Vite proxy so first requests are not unauthenticated.
  */
@@ -367,6 +546,8 @@ function localApiAuthPlugin(env: Record<string, string>): Plugin {
           url.startsWith('/api/me') ||
           url.startsWith('/api/auth/session-token') ||
           url.startsWith('/api/auth/ws-ticket') ||
+          url.startsWith('/api/skills/export') ||
+          url.startsWith('/api/skills/import') ||
           url.startsWith('/api/ws') ||
           url.startsWith('/api/events') ||
           url.startsWith('/api/pub')
@@ -472,10 +653,16 @@ export default defineConfig(({ mode }) => {
   LOCAL.password =
     env.HERMES_LOCAL_PASSWORD || env.VITE_HERMES_LOCAL_PASSWORD || '';
 
+  // Чтобы server/loadConfig и ensureLocalLogin видели .env.local
+  for (const [k, v] of Object.entries(env)) {
+    if (process.env[k] === undefined) process.env[k] = v;
+  }
+
   return {
     plugins: [
       react(),
       agentsConfigPlugin(env),
+      skillTransferPlugin(),
       localApiAuthPlugin(env),
       l1ProxyPlugin(),
     ],
