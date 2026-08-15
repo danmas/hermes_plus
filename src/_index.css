@@ -139,15 +139,85 @@ body {
   padding: 12px;
 }
 
+/* ── Группировка Хостов в Fleet ── */
+.fleet-host-group {
+  margin-bottom: 14px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 10px;
+}
+
+.fleet-host-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 6px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.fleet-host-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fleet-host-profiles {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.fleet-host-group--collapsed {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.fleet-host-icon-badge {
+  font-size: 14px;
+  margin-bottom: 2px;
+}
+
+.agent-card--collapsed {
+  padding: 6px;
+  margin-bottom: 0;
+}
+
 /* ── Карточки Агентов (Fleet) ── */
 .agent-card {
-  padding: 12px;
+  padding: 10px 12px;
   border-radius: 8px;
   border: 1px solid var(--border-color);
   background-color: var(--bg-tertiary);
   margin-bottom: 8px;
   cursor: pointer;
   transition: all var(--transition-fast);
+}
+
+.agent-card.profile-card {
+  margin-bottom: 0;
+  background-color: var(--bg-secondary);
+  border-color: rgba(255, 255, 255, 0.07);
+}
+
+.profile-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.profile-meta {
+  font-size: 11px;
+  color: var(--text-secondary);
 }
 
 .agent-card:hover {

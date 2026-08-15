@@ -28,6 +28,7 @@
 
 - `POST /auth/login` принимает `{ username, password }`; оба поля сверяются
   timing-safe; единый ответ при ошибке: «Неверный логин или пароль».
+- **Группировка агентов в Hermes Fleet (`_FleetSelector.tsx`)**: визуальное разделение хостов/серверов (`💻 Local Hermes` vs `📡 Remote Host`). Профили теперь вложены внутрь блока своей машины с наглядным отображением имени профиля `👤 profile`.
 - `GET /api/me` возвращает `user` из `HERMES_PLUS_USERNAME`.
 
 ---
